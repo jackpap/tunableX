@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import argparse
 
-import examples.myapp.pipeline_params as pipeline  # registers @tunable
+import examples.myapp.pipeline as pipeline  # registers @tunable
 
 from tunablex.runtime import schema_by_entry_ast
 from tunablex.runtime import write_schema

@@ -73,6 +73,34 @@ def add_flags_from_model(parser: ArgumentParser, app_config_model) -> None:
             else:
                 grp.add_argument(flag, type=str, dest=dest, help=help_text, default=SUPPRESS)
 
+    # Handle root-level fields (non-BaseModel fields)
+    root_grp = None
+    for field_name, field_info in app_config_model.model_fields.items():
+        field_type = field_info.annotation
+        if isinstance(field_type, type) and issubclass(field_type, BaseModel):
+            # This is a nested section - handle it below
+            continue
+        
+        # This is a root-level field - add it directly
+        if root_grp is None:
+            root_grp = parser.add_argument_group("root parameters")
+        
+        help_text = _help_with_default(field_info)
+        flag = f"--{field_name}"
+        dest = f"TX__ROOT__{field_name}"
+        
+        if get_origin(field_type) is Literal:
+            root_grp.add_argument(flag, choices=[*get_args(field_type)], dest=dest, help=help_text, default=SUPPRESS)
+        elif field_type is bool:
+            root_grp.add_argument(flag, action=BooleanOptionalAction, dest=dest, help=help_text, default=SUPPRESS)
+        elif field_type in (int, float, str):
+            root_grp.add_argument(flag, type=field_type, dest=dest, help=help_text, default=SUPPRESS)
+        elif field_type is Path:
+            root_grp.add_argument(flag, type=str, dest=dest, help=help_text, default=SUPPRESS)
+        else:
+            root_grp.add_argument(flag, type=str, dest=dest, help=help_text, default=SUPPRESS)
+
+    # Handle nested sections (BaseModel fields)
     for section_name, section_field in app_config_model.model_fields.items():
         section_model = section_field.annotation
         if not (isinstance(section_model, type) and issubclass(section_model, BaseModel)):
@@ -140,6 +168,21 @@ def collect_overrides(args, app_config_model) -> dict:
                 if val is not None:
                     assign_path(node_path, name, val)
 
+    # Handle root-level fields first
+    for field_name, field_info in app_config_model.model_fields.items():
+        field_type = field_info.annotation
+        if isinstance(field_type, type) and issubclass(field_type, BaseModel):
+            # This is a nested section - handle it below
+            continue
+        
+        # This is a root-level field
+        dest = f"TX__ROOT__{field_name}"
+        if hasattr(args, dest):
+            val = getattr(args, dest)
+            if val is not None:
+                overrides[field_name] = val
+
+    # Handle nested sections
     for section_name, section_field in app_config_model.model_fields.items():
         section_model = section_field.annotation
         if not (isinstance(section_model, type) and issubclass(section_model, BaseModel)):

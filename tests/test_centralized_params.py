@@ -49,5 +49,5 @@ def test_file_plus_overrides_with_centralized_params(tmp_path, run_example):
         ["--config", str(cfg), "--train.epochs", "50", "--model.hidden_units", "512"],
     )
     assert code == 0, err
-    assert "build_model 512 0.15" in out
+    assert "build_model 512 0.15 default" in out
     assert "train 50 8 sgd" in out

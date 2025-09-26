@@ -12,13 +12,14 @@ from tunablex import tunable
 from .params import Main, Model, Preprocess, Train
 
 
-@tunable("hidden_units", "dropout", apps=("train",))
+@tunable("hidden_units", "dropout", "root_param", apps=("train",))
 def build_model(
     hidden_units=Model.hidden_units,
-    dropout=Main.dropout,
+    dropout=Model.dropout,
+    root_param=Main.root_param,
 ):
     """Build the model using centralized parameters."""
-    print("build_model", hidden_units, dropout)
+    print("build_model", hidden_units, dropout, root_param)
     return "model"
 
 

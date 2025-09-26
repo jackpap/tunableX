@@ -101,19 +101,37 @@ class TunableRegistry:
                 self.fullpath = fullpath
 
         roots: dict[str, _Node] = {}
+        root_fields: dict[str, tuple[type[Any] | Any, Any]] = {}  # For empty namespace (root level)
 
         for ns in sorted(set(namespaces)):
             entry = self.by_namespace.get(ns)
             if not entry:
                 continue
+            
+            # Handle empty namespace (root level) specially
+            if ns == "":
+                # Collect root-level fields directly
+                for name, fld in entry.model.model_fields.items():
+                    if name in root_fields:
+                        # Check for conflicts
+                        prev_ann, _prev = root_fields[name]
+                        if prev_ann != fld.annotation:
+                            msg = f"Conflicting root field '{name}': {prev_ann} vs {fld.annotation}"
+                            raise ValueError(msg)
+                        continue  # keep first definition
+                    root_fields[name] = (fld.annotation, fld)
+                continue
+            
             parts = ns.split(".")
-            if not parts:
+            if not parts or (len(parts) == 1 and parts[0] == ""):
                 continue
             # Traverse/create nodes
             cur_map = roots
             cur_path = []
             node: _Node | None = None
             for seg in parts:
+                if seg == "":  # Skip empty segments
+                    continue
                 cur_path.append(seg)
                 path = ".".join(cur_path)
                 if seg not in cur_map:
@@ -171,8 +189,16 @@ class TunableRegistry:
 
         # Build top-level fields for AppConfig from roots
         app_fields: dict[str, tuple[type[BaseModel] | Any, Any]] = {}
+        
+        # Add root-level fields first (from empty namespace)
+        app_fields.update(root_fields)
+        
+        # Then add nested namespace models
         for root_seg, root_node in roots.items():
             seg_field_name = root_seg.replace("-", "_")  # sanitize segment for attribute
+            if seg_field_name in app_fields:
+                msg = f"Root field '{seg_field_name}' conflicts with namespace segment"
+                raise ValueError(msg)
             model = build_node_model(root_node)
             try:
                 model()
