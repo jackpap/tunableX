@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tunablex"                # PyPI name (normalized)
-version = "0.1.5"                # bump before each release
+version = "0.1.6"                # bump before each release
 description = "Function-first tunables with auto JSON/YAML/TOML config & schema, per-executable composition (tags or trace), and runtime auto-injection."
 readme = "README.md"
 requires-python = ">=3.10"
