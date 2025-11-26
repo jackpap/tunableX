@@ -3,7 +3,7 @@ from jsonargparse import ArgumentParser
 
 from tunablex import use_config
 from tunablex.runtime import load_config_for_entry
-from tunablex.runtime import schema_by_entry_ast
+from tunablex.runtime import schema_for_entrypoint
 from tunablex.runtime import write_schema
 
 if __name__ == "__main__":
@@ -18,7 +18,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.gen_schema:
-        schema, defaults, _ = schema_by_entry_ast(pipeline.train_main)
+        schema, defaults = schema_for_entrypoint(pipeline.train_main)
         write_schema(args.schema_prefix, schema, defaults)
         print(f"Wrote {args.schema_prefix}.schema.json and {args.schema_prefix}.json")
     else:

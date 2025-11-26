@@ -19,8 +19,8 @@ from pydantic import BaseModel
 from pydantic import Field
 
 from .io import load_structured_config
-from .runtime import make_app_config_for
-from .runtime import make_app_config_for_entry
+from .runtime import make_config_for_app
+from .runtime import make_config_for_entry
 
 if TYPE_CHECKING:
     from jsonargparse import ArgumentParser
@@ -91,25 +91,19 @@ def add_flags_from_model(parser: ArgumentParser, app_config_model: type[BaseMode
 
 def add_flags_by_app(parser: ArgumentParser, app: str):
     """Add flags for all tunables tagged with the given app and return the AppConfig model."""
-    app_config_model = make_app_config_for(app)
+    app_config_model = make_config_for_app(app)
     add_flags_from_model(parser, app_config_model)
     return app_config_model
 
 
-def add_flags_by_entry(parser: ArgumentParser, entrypoint, *args, **kwargs) -> BaseModel:  # type: ignore[override]
+def add_flags_by_entry(parser: ArgumentParser, entrypoint) -> BaseModel:  # type: ignore[override]
     """Add flags discovered via static (AST) analysis of the entrypoint call graph.
 
     Returns the generated AppConfig model (same as add_flags_by_app).
     """
-    app_config_model = make_app_config_for_entry(entrypoint, *args, **kwargs)
+    app_config_model = make_config_for_entry(entrypoint)
     add_flags_from_model(parser, app_config_model)
     return app_config_model
-
-
-# Backwards compatibility alias: previously tracing; now static analysis underneath
-def add_flags_by_trace(parser: ArgumentParser, entrypoint, *args, **kwargs):  # noqa: D401
-    """Alias for add_flags_by_entry kept for backwards compatibility."""
-    return add_flags_by_entry(parser, entrypoint, *args, **kwargs)
 
 
 def deep_update(base: dict, extra: dict) -> dict:

@@ -12,19 +12,19 @@ from __future__ import annotations
 
 import argparse
 
-import examples.myapp.pipeline_params as pipeline  # registers @tunable
+import examples.myapp.pipeline_params as pipeline_params
 
-from tunablex.runtime import schema_for_entrypoint
+from tunablex.runtime import schema_for_app
 from tunablex.runtime import write_schema
 
 
 def main():
     parser = argparse.ArgumentParser(prog="trace_generate_schema")
     parser.add_argument(
-        "--entry",
+        "--app",
         choices=["train", "serve"],
         default="train",
-        help="Which entrypoint to analyze (train_main or serve_main)",
+        help="Which app to analyze (train or serve)",
     )
     parser.add_argument(
         "--prefix",
@@ -33,8 +33,7 @@ def main():
     )
     args = parser.parse_args()
 
-    entry_fn = pipeline.train_main if args.entry == "train" else pipeline.serve_main
-    schema, defaults = schema_for_entrypoint(entry_fn)
+    schema, defaults = schema_for_app(args.app)
     write_schema(args.prefix, schema, defaults)
 
     print(f"Wrote {args.prefix}.schema.json and {args.prefix}.json")

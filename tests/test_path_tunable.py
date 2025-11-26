@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import json
 
 import pytest
@@ -16,7 +17,7 @@ def test_path_tunable_defaults_and_override(tmp_path, repo_root, run_example):
 from pathlib import Path
 from pydantic import Field
 from tunablex import tunable, use_config
-from tunablex.runtime import make_app_config_for
+from tunablex.runtime import make_config_for_app
 from tunablex.cli_helpers import add_flags_by_app, build_cfg_from_file_and_args
 
 @tunable("ckpt_path", namespace="train.path", apps=("train",))
@@ -25,7 +26,7 @@ def step(ckpt_path: Path = Field(Path("ckpt"), description="Path to checkpoint d
 
 if __name__ == "__main__":
     APP = "train"
-    AppConfig = make_app_config_for(APP)
+    AppConfig = make_config_for_app(APP)
     from jsonargparse import ArgumentParser
     p = ArgumentParser()
     p.add_argument("--config", help="optional config")

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import pytest
 
 # Tests that jsonargparse-generated help output includes default values from Pydantic Fields

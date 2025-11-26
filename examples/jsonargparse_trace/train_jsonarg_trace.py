@@ -2,7 +2,7 @@ import examples.myapp.pipeline as pipeline  # registers @tunable
 from jsonargparse import ArgumentParser
 
 from tunablex import use_config
-from tunablex.cli_helpers import add_flags_by_trace  # still works (AST under the hood)
+from tunablex.cli_helpers import add_flags_by_entry
 from tunablex.cli_helpers import build_cfg_from_file_and_args
 
 if __name__ == "__main__":
@@ -10,7 +10,7 @@ if __name__ == "__main__":
     parser.add_argument("--config", help="Path to train_config.json (optional)")
 
     # add_flags_by_trace returns the AppConfig model after adding flags
-    AppConfig = add_flags_by_trace(parser, pipeline.train_main)
+    AppConfig = add_flags_by_entry(parser, pipeline.train_main)
 
     args = parser.parse_args()
 

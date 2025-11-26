@@ -17,13 +17,8 @@ def load_structured_config(path: str | Path) -> dict[str, Any]:
         try:
             import yaml  # PyYAML
         except ModuleNotFoundError as e:
-            msg = (
-                "YAML file provided but PyYAML is not installed. "
-                "Install with: uv pip install '.[yaml]'"
-            )
-            raise RuntimeError(
-                msg
-            ) from e
+            msg = "YAML file provided but PyYAML is not installed. Install with: uv pip install '.[yaml]'"
+            raise RuntimeError(msg) from e
         return yaml.safe_load(text) or {}
 
     if ext == ".json":
@@ -42,6 +37,7 @@ def load_structured_config(path: str | Path) -> dict[str, Any]:
     except json.JSONDecodeError:
         try:
             import yaml  # PyYAML
+
             return yaml.safe_load(text) or {}
         except Exception as e:
             msg = f"Could not parse config file: {p}"

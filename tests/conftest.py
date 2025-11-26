@@ -20,4 +20,5 @@ def run_example(repo_root):
         cmd = [sys.executable, str(repo_root / script_relpath), *args]
         proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
         return proc.returncode, proc.stdout, proc.stderr
+
     return _run

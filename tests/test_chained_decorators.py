@@ -2,14 +2,15 @@ from __future__ import annotations
 
 # Test chaining two @tunable decorators to split parameters across namespaces and
 # ensure help text (descriptions + defaults) is preserved for each parameter.
-
 import pytest
 from jsonargparse import ArgumentParser
 from pydantic import Field
 
-from tunablex import add_flags_by_app, build_cfg_from_file_and_args, tunable
+from tunablex import add_flags_by_app
+from tunablex import build_cfg_from_file_and_args
+from tunablex import tunable
 from tunablex.context import use_config
-from tunablex.runtime import make_app_config_for
+from tunablex.runtime import make_config_for_app
 
 pytestmark = pytest.mark.skipif(pytest.importorskip("jsonargparse") is None, reason="jsonargparse not installed")
 
@@ -37,7 +38,7 @@ def test_chained_tunable_decorators_help_output(capsys):
 
 
 def test_chained_tunable_decorators_runtime_injection():
-    AppConfig = make_app_config_for("chainapp")  # noqa: N806
+    AppConfig = make_config_for_app("chainapp")  # noqa: N806
     cfg = AppConfig()
     with use_config(cfg):
         vals = chained_func()

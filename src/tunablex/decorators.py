@@ -18,7 +18,7 @@ from pydantic.fields import FieldInfo
 
 from .context import _active_cfg
 from .registry import REGISTRY
-from .registry import TunableEntry
+from .registry import TunableArg
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -31,24 +31,62 @@ def _pascalcase_to_snake_case(ns: str) -> str:
     return re.sub(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", ns).lower()
 
 
-class TunableParamMeta(type):
+class TunableParamsMeta(type):
     """A metaclass that allows to retrieve namespace and type annotation at runtime."""
 
-    def _namespace(cls) -> str:
-        parent = cls.mro()[1]
-        if parent is object:
-            return ""
-        ns = _pascalcase_to_snake_case(super().__getattribute__("__name__"))
-        if parent._namespace():
-            return f"{parent._namespace()}.{ns}"
-        return ns
+    def __init__(cls, name, bases, attrs):  # noqa: D107
+        super().__init__(name, bases, attrs)
+        cls.namespace = None
 
-    def __getattribute__(cls, name: str):
+    @staticmethod
+    def _process_name(name: str) -> str:
+        """Process a class name to turn it into a namespace."""
+        name = _pascalcase_to_snake_case(name).replace("_params", "")
+        if name == "main" or name == "root":
+            name = ""
+        return name
+
+    def __getattribute__(cls, name: str) -> Any | tuple[Any, str, str, str]:
+        """Override that returns additional informations when the attribute is a FieldInfo.
+
+        Store the classes that are accessed and use them to build the final namespace.
+        """
+        if super().__getattribute__("namespace") is None:
+            cls.namespace = TunableParamsMeta._process_name(super().__getattribute__("__name__"))
+
         if isinstance(value := super().__getattribute__(name), FieldInfo):
             globalsns = vars(sys.modules[cls.__module__])
             typ = get_type_hints(cls, globalns=globalsns).get(name, Any)
-            return value, typ, TunableParamMeta._namespace(cls), name
+            return value, typ, cls.namespace, name
+
+        # If value is a class with this metaclass, update its parent namespace
+        if isinstance(value, type) and isinstance(value, TunableParamsMeta):
+            value.namespace = f"{cls.namespace}.{TunableParamsMeta._process_name(name)}"
+
         return value
+
+
+class TunableParams(metaclass=TunableParamsMeta):
+    """A class containing tunable parameters.
+
+    Inherit from this class to declare tunable parameters globally.
+    If the class name contains `Params`, it will be removed from the namespace for brevity.
+    If the resulting namespace is `main` or `root`, the parameters will be stored at the root level.
+
+    When using several levels of namespaces, it is possible to declare the parameters in a class at the root level
+    and to reference this class in the namespace, to avoid having too many indentations in the lower levels.
+
+    Example:
+        # This is root level
+        class AdvancedParams(TunableParams):
+            param1: ...
+            param2: ...
+
+        class GeneralParams(TunableParams):
+            Advanced = AdvancedParams
+
+    In this case, the namespace for param1 and param2 is `general.advanced`.
+    """
 
 
 def _resolve_nested_section(cfg_model: BaseModel, dotted_ns: str):
@@ -80,12 +118,12 @@ def tunable(
     if include_set and exclude_set:
         msg = "Cannot pass both `include` and `exclude` arguments."
         raise ValueError(msg)
-    apps = (apps,) if isinstance(apps, str) else apps
+    apps = {apps} if isinstance(apps, str) else set(apps)
 
     def decorator(fn):
         sig = inspect.signature(fn)
         ns = namespace
-        namespaces = {}
+        namespaces = set()
         ref_names = {}
         for name, p in sig.parameters.items():
             if name == "mro":
@@ -113,14 +151,23 @@ def tunable(
             else:
                 typ = inspect.get_annotations(fn, eval_str=False)[name]
                 typ = eval(typ, fn.__globals__) if isinstance(typ, str) else typ
-            ns_dict = namespaces.setdefault(ns, {})
-            ns_dict.update({name: (typ, default)})
-
-        for ns, fields in namespaces.items():
-            REGISTRY.register(TunableEntry(fn=fn, fields=fields, namespace=ns, apps=set(apps)))
+            namespaces.add(ns)
+            REGISTRY.register(
+                TunableArg(
+                    name=name,
+                    typ=typ,
+                    default=default,
+                    namespace=ns,
+                    fn_names={fn.__qualname__, f"{fn.__module__}.{fn.__qualname__}"},
+                    apps=set(apps),
+                )
+            )
 
         @functools.wraps(fn)
         def wrapper(*args, cfg: BaseModel | dict | None = None, **kwargs):
+            # Handle static methods called from instances
+            if isinstance(fn, staticmethod) and args[0].__class__.__name__ == fn.__qualname__.split(".")[0]:
+                args = args[1:]
             if cfg is not None:
                 data = cfg if isinstance(cfg, dict) else cfg.model_dump()
                 filtered = {
@@ -131,11 +178,11 @@ def tunable(
                 }
                 return fn(*args, **filtered, **kwargs)
 
-            app_cfg = _active_cfg.get()
-            if app_cfg is not None:
+            cfg = _active_cfg.get()
+            if cfg is not None:
                 filtered = {}
                 for ns in namespaces:
-                    section = _resolve_nested_section(app_cfg, ns)
+                    section = _resolve_nested_section(cfg, ns)
                     if section is not None:
                         data = section if isinstance(section, dict) else section.model_dump()
                         filtered.update({

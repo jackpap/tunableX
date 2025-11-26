@@ -1,14 +1,25 @@
 from __future__ import annotations
 
 import json
-import pathlib
+from typing import TYPE_CHECKING
 
 import pytest
 
+if TYPE_CHECKING:
+    import pathlib
 
-def make_train_config(path: pathlib.Path, epochs=10, batch_size=32, optimizer="adam",
-                      hidden_units=128, dropout=0.2,
-                      dropna=True, normalize="zscore", clip_outliers=3.0):
+
+def make_train_config(
+    path: pathlib.Path,
+    epochs=10,
+    batch_size=32,
+    optimizer="adam",
+    hidden_units=128,
+    dropout=0.2,
+    dropna=True,
+    normalize="zscore",
+    clip_outliers=3.0,
+):
     data = {
         "model": {
             "hidden_units": hidden_units,

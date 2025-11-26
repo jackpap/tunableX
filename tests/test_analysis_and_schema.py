@@ -22,7 +22,11 @@ def test_analyze_generate_default_yaml(tmp_path, run_example):
     assert json_path.exists()
 
     data = json.loads(json_path.read_text())
-    assert "model" in data and "train" in data and "preprocess" in data.get("model", {})
+    assert "model" in data
+    assert "train" in data
+    assert "preprocess" in data["model"]
+    assert "submodule_fun" in data["model"]["preprocess"]
+    assert "submodule_class" in data["model"]["preprocess"]
 
 
 @pytest.mark.skipif(pytest.importorskip("yaml") is None, reason="PyYAML not installed")
