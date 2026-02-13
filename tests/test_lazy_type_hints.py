@@ -13,8 +13,8 @@ raise NameError. The lazy implementation should ignore 'b' and succeed.
 
 from __future__ import annotations
 
-from tunablex import REGISTRY
 from tunablex import tunable
+from tunablex.registry import REGISTRY
 
 
 # Use an explicit unique namespace to avoid interference with other tests.
