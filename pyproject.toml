@@ -13,7 +13,7 @@ authors = [
   { name = "Jacques Papper" },
   { name = "Vincent Drouet", email = "v.drouet@iconcfd.com" }
 ]
-dependencies = ["pydantic>=2.4"]
+dependencies = ["pydantic>=2.12.5"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "License :: OSI Approved :: MIT License",

@@ -10,6 +10,7 @@ import functools
 import inspect
 import re
 import sys
+from contextlib import suppress
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import get_type_hints
@@ -29,6 +30,25 @@ if TYPE_CHECKING:
 def _pascalcase_to_snake_case(ns: str) -> str:
     """Convert a namespace name from PascalCase to snake_case."""
     return re.sub(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", ns).lower()
+
+
+def _get_description(cls: type, name: str) -> str:
+    """Get a parameter's description from its docstring.
+
+    Args:
+        cls: TunableParams class containing the parameter.
+        name: Parameter's name
+
+    Returns:
+        Parameter's docstring.
+    """
+    source = inspect.getsource(cls)
+    i1 = source.index(name)
+    s1 = source[i1:]
+    i2 = s1.index('"""') + 3
+    s2 = s1[i2:]
+    i3 = s2.index('"""')
+    return s2[:i3]
 
 
 class TunableParamsMeta(type):
@@ -57,6 +77,9 @@ class TunableParamsMeta(type):
         if isinstance(value := super().__getattribute__(name), FieldInfo):
             globalsns = vars(sys.modules[cls.__module__])
             typ = get_type_hints(cls, globalns=globalsns).get(name, Any)
+            if value.description is None:
+                with suppress(Exception):
+                    value.description = _get_description(cls, name)
             return value, typ, cls.namespace, name
 
         # If value is a class with this metaclass, update its parent namespace

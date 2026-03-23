@@ -30,7 +30,8 @@ class PreprocessParams(TunableParams):
 
     dropna: bool = Field(True, description="Drop rows with missing values")
     normalize: Literal["zscore", "minmax", "none"] = Field("zscore", description="Normalization strategy")
-    clip_outliers: float = Field(3.0, ge=0, le=10, description="Clip values beyond k standard deviations")
+    clip_outliers: float = Field(3.0, ge=0, le=10)
+    """Clip values beyond k standard deviations. Description in docstring."""
 
 
 class ModelParams(TunableParams):

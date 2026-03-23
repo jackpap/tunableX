@@ -75,3 +75,17 @@ def test_other_argnames_from_centralized_params(tmp_path, run_example):
     assert "build_model [128, 128] 0.15 sum False newRoot" in out
     assert "train 5 8 sgd" in out
     assert "other_train 5 8 sgd" in out
+
+
+def test_get_description_from_docstring(tmp_path, run_example):
+    cfg_path = tmp_path / "test_config"
+    run_example(
+        "examples/app_generate_schema.py",
+        ["--prefix", str(cfg_path)],
+    )
+
+    schema_path = cfg_path.with_suffix(".schema.json")
+    with schema_path.open() as f:
+        cfg = json.load(f)
+    assert "clip_outliers" in str(cfg)
+    assert "Description in docstring." in str(cfg)
