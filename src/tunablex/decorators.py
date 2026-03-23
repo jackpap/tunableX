@@ -99,6 +99,9 @@ class TunableParams(metaclass=TunableParamsMeta):
     When using several levels of namespaces, it is possible to declare the parameters in a class at the root level
     and to reference this class in the namespace, to avoid having too many indentations in the lower levels.
 
+    Docstrings enclosed in triple double-quotes will be used as parameter's description
+    if none is provided in the Field definition.
+
     Example:
         # This is root level
         class AdvancedParams(TunableParams):
