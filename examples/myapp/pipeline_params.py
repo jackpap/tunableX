@@ -21,18 +21,17 @@ from .pipeline_submodule import submodule_fun
 Preprocess = ModelParams.Preprocess
 
 
-@tunable("hidden_units", "dropout", "agg", apps="train")
-@tunable("batch_norm", apps="train")
-@tunable("root_param", apps="train")
+@tunable(apps="train")
 def build_model(
     hidden_units=ModelParams.hidden_sizes,
     dropout=ModelParams.dropout,
     agg=ModelParams.agg,
     batch_norm: bool = True,
     root_param=MainParams.root_param,
+    advanced_root_param=MainParams.Advanced.advanced_root_param,
 ):
     """Build the model using centralized parameters."""
-    print("build_model", hidden_units, dropout, agg, batch_norm, root_param)
+    print("build_model", hidden_units, dropout, agg, batch_norm, root_param, advanced_root_param)
     return "model"
 
 

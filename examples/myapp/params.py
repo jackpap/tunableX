@@ -19,7 +19,11 @@ from tunablex import TunableParams
 class MainParams(TunableParams):
     """Root for centralized tunable namespaces ("main")."""
 
-    root_param: str = Field("default", description="A root-level parameter")
+    root_param: str = Field("root", description="A root-level parameter")
+
+    class Advanced(TunableParams):  # noqa: D106
+        advanced_root_param: str = Field(default="advanced_root")
+        """Advanced root parameter."""
 
 
 class PreprocessParams(TunableParams):

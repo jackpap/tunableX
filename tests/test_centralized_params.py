@@ -12,7 +12,7 @@ def test_app_with_centralized_params_defaults_and_overrides(run_example):
         ["--train.epochs", "20", "--model.hidden_sizes", "128", "256", "--model.preprocess.normalize", "minmax"],
     )
     assert code == 0, err
-    assert "build_model [128, 256]" in out
+    assert "build_model [128, 256] 0.2 sum True root advanced_root" in out
     assert "train 20 32 adam" in out
 
 

@@ -71,6 +71,10 @@ class TunableParamsMeta(type):
 
         Store the classes that are accessed and use them to build the final namespace.
         """
+        value = super().__getattribute__(name)
+        if not isinstance(cls, TunableParamsMeta):
+            return value
+
         if super().__getattribute__("namespace") is None:
             cls.namespace = TunableParamsMeta._process_name(super().__getattribute__("__name__"))
 
@@ -84,7 +88,11 @@ class TunableParamsMeta(type):
 
         # If value is a class with this metaclass, update its parent namespace
         if isinstance(value, type) and isinstance(value, TunableParamsMeta):
-            value.namespace = f"{cls.namespace}.{TunableParamsMeta._process_name(name)}"
+            value.namespace = (
+                f"{cls.namespace}.{TunableParamsMeta._process_name(name)}"
+                if cls.namespace
+                else TunableParamsMeta._process_name(name)  # for cases like main.advanced
+            )
 
         return value
 
