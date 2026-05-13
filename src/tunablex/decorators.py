@@ -148,7 +148,6 @@ def tunable(
 
     def decorator(fn):
         sig = inspect.signature(fn)
-        ns = namespace
         namespaces = set()
         ref_names = {}
         for name, p in sig.parameters.items():
@@ -177,6 +176,7 @@ def tunable(
             else:
                 typ = inspect.get_annotations(fn, eval_str=False)[name]
                 typ = eval(typ, fn.__globals__) if isinstance(typ, str) else typ
+                ns = namespace
             namespaces.add(ns)
             REGISTRY.register(
                 TunableArg(
