@@ -10,7 +10,7 @@ import functools
 import inspect
 import re
 import sys
-from contextlib import suppress
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import get_type_hints
@@ -32,7 +32,7 @@ def _pascalcase_to_snake_case(ns: str) -> str:
     return re.sub(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", ns).lower()
 
 
-def _get_description(cls: type, name: str) -> str:
+def _get_description(cls: type, name: str) -> str | None:
     """Get a parameter's description from its docstring.
 
     Args:
@@ -40,15 +40,28 @@ def _get_description(cls: type, name: str) -> str:
         name: Parameter's name
 
     Returns:
-        Parameter's docstring.
+        Parameter's docstring, or None if it does not exist.
     """
-    source = inspect.getsource(cls)
-    i1 = source.index(name)
-    s1 = source[i1:]
-    i2 = s1.index('"""') + 3
-    s2 = s1[i2:]
-    i3 = s2.index('"""')
-    return s2[:i3]
+    try:
+        source = inspect.getsource(cls)
+        i1 = source.index(name)
+        s1 = source[i1:]
+        i2 = s1.index('"""') + 3
+        s2 = s1[i2:]
+        i3 = s2.index('"""')
+        return s2[:i3]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+@dataclass
+class TunableParamData:
+    """Class containing the data of a tunable parameter."""
+
+    value: Any
+    typ: type
+    namespace: str
+    name: str
 
 
 class TunableParamsMeta(type):
@@ -78,14 +91,6 @@ class TunableParamsMeta(type):
         if super().__getattribute__("namespace") is None:
             cls.namespace = TunableParamsMeta._process_name(super().__getattribute__("__name__"))
 
-        if isinstance(value := super().__getattribute__(name), FieldInfo):
-            globalsns = vars(sys.modules[cls.__module__])
-            typ = get_type_hints(cls, globalns=globalsns).get(name, Any)
-            if value.description is None:
-                with suppress(Exception):
-                    value.description = _get_description(cls, name)
-            return value, typ, cls.namespace, name
-
         # If value is a class with this metaclass, update its parent namespace
         if isinstance(value, type) and isinstance(value, TunableParamsMeta):
             value.namespace = (
@@ -93,6 +98,14 @@ class TunableParamsMeta(type):
                 if cls.namespace
                 else TunableParamsMeta._process_name(name)  # for cases like main.advanced
             )
+            return value
+
+        if isinstance(value, FieldInfo):
+            globalsns = vars(sys.modules[cls.__module__])
+            typ = get_type_hints(cls, globalns=globalsns).get(name, Any)
+            if value.description is None:
+                value.description = _get_description(cls, name)
+            return TunableParamData(value, typ, cls.namespace, name)
 
         return value
 
@@ -173,9 +186,14 @@ def tunable(
             if not selected:
                 continue
             default = p.default if p.default is not inspect._empty else ...
-            if isinstance(default, tuple) and isinstance(default[0], FieldInfo):
+            if isinstance(default, TunableParamData):
                 # The parameter is declared in a TunableParam class; retrieve type, namespace and reference name
-                default, typ, ns, ref_name = default
+                default, typ, ns, ref_name = (
+                    default.value,
+                    default.typ,
+                    default.namespace,
+                    default.name,
+                )
                 if ref_name != name:
                     # Store the reference name for later look-up
                     # This allows to have different local names for the same global parameter
