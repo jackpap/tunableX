@@ -14,11 +14,13 @@ import sys
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+from typing import Annotated
 from typing import Any
 
 from pydantic import BaseModel
 from pydantic import Field
 from pydantic import create_model
+from pydantic.fields import FieldInfo
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -164,7 +166,12 @@ class TunableRegistry:
         fields = {}
         for name, entry in node.entries.items():
             if app in entry.apps or "ALL" in entry.apps:
-                fields[name] = (entry.typ, entry.default)
+                if isinstance(entry.default, FieldInfo):
+                    # Recreate the Field to merge the description, see https://docs.pydantic.dev/latest/examples/dynamic_models/
+                    default_dict = entry.default.asdict()
+                    fields[name] = Annotated[entry.typ, *default_dict["metadata"], Field(**default_dict["attributes"])]
+                else:
+                    fields[name] = (entry.typ, entry.default)
         for name, child in node.children.items():
             child_model = self.build_config_for_app(app, child)
             if child_model.model_fields:

@@ -10,6 +10,7 @@ import functools
 import inspect
 import re
 import sys
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import get_type_hints
@@ -29,6 +30,38 @@ if TYPE_CHECKING:
 def _pascalcase_to_snake_case(ns: str) -> str:
     """Convert a namespace name from PascalCase to snake_case."""
     return re.sub(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", ns).lower()
+
+
+def _get_description(cls: type, name: str) -> str | None:
+    """Get a parameter's description from its docstring.
+
+    Args:
+        cls: TunableParams class containing the parameter.
+        name: Parameter's name
+
+    Returns:
+        Parameter's docstring, or None if it does not exist.
+    """
+    try:
+        source = inspect.getsource(cls)
+        i1 = source.index(name)
+        s1 = source[i1:]
+        i2 = s1.index('"""') + 3
+        s2 = s1[i2:]
+        i3 = s2.index('"""')
+        return s2[:i3]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+@dataclass
+class TunableParamData:
+    """Class containing the data of a tunable parameter."""
+
+    value: Any
+    typ: type
+    namespace: str
+    name: str
 
 
 class TunableParamsMeta(type):
@@ -51,17 +84,28 @@ class TunableParamsMeta(type):
 
         Store the classes that are accessed and use them to build the final namespace.
         """
+        value = super().__getattribute__(name)
+        if not isinstance(cls, TunableParamsMeta):
+            return value
+
         if super().__getattribute__("namespace") is None:
             cls.namespace = TunableParamsMeta._process_name(super().__getattribute__("__name__"))
 
-        if isinstance(value := super().__getattribute__(name), FieldInfo):
-            globalsns = vars(sys.modules[cls.__module__])
-            typ = get_type_hints(cls, globalns=globalsns).get(name, Any)
-            return value, typ, cls.namespace, name
-
         # If value is a class with this metaclass, update its parent namespace
         if isinstance(value, type) and isinstance(value, TunableParamsMeta):
-            value.namespace = f"{cls.namespace}.{TunableParamsMeta._process_name(name)}"
+            value.namespace = (
+                f"{cls.namespace}.{TunableParamsMeta._process_name(name)}"
+                if cls.namespace
+                else TunableParamsMeta._process_name(name)  # for cases like main.advanced
+            )
+            return value
+
+        if isinstance(value, FieldInfo):
+            globalsns = vars(sys.modules[cls.__module__])
+            typ = get_type_hints(cls, globalns=globalsns).get(name, Any)
+            if value.description is None:
+                value.description = _get_description(cls, name)
+            return TunableParamData(value, typ, cls.namespace, name)
 
         return value
 
@@ -75,6 +119,9 @@ class TunableParams(metaclass=TunableParamsMeta):
 
     When using several levels of namespaces, it is possible to declare the parameters in a class at the root level
     and to reference this class in the namespace, to avoid having too many indentations in the lower levels.
+
+    Docstrings enclosed in triple double-quotes will be used as parameter's description
+    if none is provided in the Field definition.
 
     Example:
         # This is root level
@@ -122,7 +169,6 @@ def tunable(
 
     def decorator(fn):
         sig = inspect.signature(fn)
-        ns = namespace
         namespaces = set()
         ref_names = {}
         for name, p in sig.parameters.items():
@@ -140,9 +186,14 @@ def tunable(
             if not selected:
                 continue
             default = p.default if p.default is not inspect._empty else ...
-            if isinstance(default, tuple) and isinstance(default[0], FieldInfo):
+            if isinstance(default, TunableParamData):
                 # The parameter is declared in a TunableParam class; retrieve type, namespace and reference name
-                default, typ, ns, ref_name = default
+                default, typ, ns, ref_name = (
+                    default.value,
+                    default.typ,
+                    default.namespace,
+                    default.name,
+                )
                 if ref_name != name:
                     # Store the reference name for later look-up
                     # This allows to have different local names for the same global parameter
@@ -151,6 +202,7 @@ def tunable(
             else:
                 typ = inspect.get_annotations(fn, eval_str=False)[name]
                 typ = eval(typ, fn.__globals__) if isinstance(typ, str) else typ
+                ns = namespace
             namespaces.add(ns)
             REGISTRY.register(
                 TunableArg(

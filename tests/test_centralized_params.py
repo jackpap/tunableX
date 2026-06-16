@@ -12,7 +12,7 @@ def test_app_with_centralized_params_defaults_and_overrides(run_example):
         ["--train.epochs", "20", "--model.hidden_sizes", "128", "256", "--model.preprocess.normalize", "minmax"],
     )
     assert code == 0, err
-    assert "build_model [128, 256]" in out
+    assert "build_model [128, 256] 0.2 sum True root advanced_root" in out
     assert "train 20 32 adam" in out
 
 
@@ -75,3 +75,17 @@ def test_other_argnames_from_centralized_params(tmp_path, run_example):
     assert "build_model [128, 128] 0.15 sum False newRoot" in out
     assert "train 5 8 sgd" in out
     assert "other_train 5 8 sgd" in out
+
+
+def test_get_description_from_docstring(tmp_path, run_example):
+    cfg_path = tmp_path / "test_config"
+    run_example(
+        "examples/app_generate_schema.py",
+        ["--prefix", str(cfg_path)],
+    )
+
+    schema_path = cfg_path.with_suffix(".schema.json")
+    with schema_path.open() as f:
+        cfg = json.load(f)
+    assert "clip_outliers" in str(cfg)
+    assert "Description in docstring." in str(cfg)

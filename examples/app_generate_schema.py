@@ -11,6 +11,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).parents[1]))
 
 import examples.myapp.pipeline_params as pipeline_params
 

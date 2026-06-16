@@ -19,7 +19,11 @@ from tunablex import TunableParams
 class MainParams(TunableParams):
     """Root for centralized tunable namespaces ("main")."""
 
-    root_param: str = Field("default", description="A root-level parameter")
+    root_param: str = Field("root", description="A root-level parameter")
+
+    class Advanced(TunableParams):  # noqa: D106
+        advanced_root_param: str = Field(default="advanced_root")
+        """Advanced root parameter."""
 
 
 class PreprocessParams(TunableParams):
@@ -30,7 +34,8 @@ class PreprocessParams(TunableParams):
 
     dropna: bool = Field(True, description="Drop rows with missing values")
     normalize: Literal["zscore", "minmax", "none"] = Field("zscore", description="Normalization strategy")
-    clip_outliers: float = Field(3.0, ge=0, le=10, description="Clip values beyond k standard deviations")
+    clip_outliers: float = Field(3.0, ge=0, le=10)
+    """Clip values beyond k standard deviations. Description in docstring."""
 
 
 class ModelParams(TunableParams):
