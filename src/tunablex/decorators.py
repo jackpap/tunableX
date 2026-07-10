@@ -169,9 +169,10 @@ def tunable(
 
     def decorator(fn):
         sig = inspect.signature(fn)
-        namespaces = set()
-        ref_names = {}
+        namespaces = {}
+        global_names = {}
         for name, p in sig.parameters.items():
+            global_name = name
             if name == "mro":
                 msg = "`mro` is a protected name, please use an other name for your tunable parameters."
                 raise ValueError(msg)
@@ -188,22 +189,21 @@ def tunable(
             default = p.default if p.default is not inspect._empty else ...
             if isinstance(default, TunableParamData):
                 # The parameter is declared in a TunableParam class; retrieve type, namespace and reference name
-                default, typ, ns, ref_name = (
+                default, typ, ns, global_name = (
                     default.value,
                     default.typ,
                     default.namespace,
                     default.name,
                 )
-                if ref_name != name:
-                    # Store the reference name for later look-up
-                    # This allows to have different local names for the same global parameter
-                    ref_names[name] = ref_name
-                    name = ref_name
             else:
                 typ = inspect.get_annotations(fn, eval_str=False)[name]
                 typ = eval(typ, fn.__globals__) if isinstance(typ, str) else typ
                 ns = namespace
-            namespaces.add(ns)
+            namespaces.setdefault(ns, []).append(name)
+            if global_name != name:
+                # Store the global name for later look-up (allows different local names for the same parameter)
+                global_names[name] = global_name
+                name = global_name
             REGISTRY.register(
                 TunableArg(
                     name=name,
@@ -216,33 +216,22 @@ def tunable(
             )
 
         @functools.wraps(fn)
-        def wrapper(*args, cfg: BaseModel | dict | None = None, **kwargs):
+        def wrapper(*args, **kwargs):
             # Handle static methods called from instances
             if isinstance(fn, staticmethod) and args[0].__class__.__name__ == fn.__qualname__.split(".")[0]:
                 args = args[1:]
-            if cfg is not None:
-                data = cfg if isinstance(cfg, dict) else cfg.model_dump()
-                filtered = {
-                    # Get the tunable arguments from the config and retrieve the original name
-                    k: data[ref_names.get(k, k)]
-                    for k in sig.parameters
-                    if ref_names.get(k, k) in data and k not in kwargs
-                }
-                return fn(*args, **filtered, **kwargs)
-
             cfg = _active_cfg.get()
             if cfg is not None:
                 filtered = {}
-                for ns in namespaces:
+                for ns, ns_vars in namespaces.items():
                     section = _resolve_nested_section(cfg, ns)
-                    if section is not None:
-                        data = section if isinstance(section, dict) else section.model_dump()
-                        filtered.update({
-                            # Get the tunable arguments from the config and retrieve the original name
-                            k: data[ref_names.get(k, k)]
-                            for k in sig.parameters
-                            if ref_names.get(k, k) in data and k not in kwargs
-                        })
+                    data = section if isinstance(section, dict) else section.model_dump()
+                    filtered.update({
+                        # Get the tunable arguments from the config and retrieve the original name
+                        k: data[global_names.get(k, k)]
+                        for k in ns_vars
+                        if global_names.get(k, k) in data and k not in kwargs
+                    })
                 return fn(*args, **filtered, **kwargs)
 
             return fn(*args, **kwargs)
