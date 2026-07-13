@@ -45,6 +45,9 @@ class ModelParams(TunableParams):
     dropout: float = Field(0.2, ge=0.0, le=1.0, description="Dropout probability")
     agg: Literal["sum", "concat"] = Field("sum", description="Aggregation method")
 
+    same_name_arg: str = Field("same_name_arg_model")
+    """An arg that has the same name in two functions signatures"""
+
     Preprocess = PreprocessParams
     """Preprocess options nested under "model.preprocess"."""
 
@@ -54,6 +57,8 @@ class TrainParams(TunableParams):
 
     epochs: int = Field(10, ge=1, description="Number of training epochs")
     batch_size: int = Field(32, ge=1, description="Training batch size")
+    same_name_arg: str = Field("same_name_arg_train")
+    """An arg that has the same name in two functions signatures"""
 
 
 class ServeParams(TunableParams):

@@ -29,17 +29,25 @@ def build_model(
     batch_norm: bool = True,
     root_param=MainParams.root_param,
     advanced_root_param=MainParams.Advanced.advanced_root_param,
+    same_name_arg=ModelParams.same_name_arg,
+    dummy_arg=TrainParams.epochs,  # used to test name conflicts
 ):
     """Build the model using centralized parameters."""
-    print("build_model", hidden_units, dropout, agg, batch_norm, root_param, advanced_root_param)
+    del dummy_arg
+    print("build_model", hidden_units, dropout, agg, batch_norm, root_param, advanced_root_param, same_name_arg)
     return "model"
 
 
-@tunable("epochs", "batch_size", apps="train")
+@tunable("epochs", "batch_size", "same_name_arg", apps="train")
 @tunable("optimizer", namespace="train", apps="train")
-def train(epochs=TrainParams.epochs, batch_size=TrainParams.batch_size, optimizer: Literal["adam", "sgd"] = "adam"):
+def train(
+    epochs=TrainParams.epochs,
+    batch_size=TrainParams.batch_size,
+    optimizer: Literal["adam", "sgd"] = "adam",
+    same_name_arg=TrainParams.same_name_arg,
+):
     """Train the model using centralized parameters."""
-    print("train", epochs, batch_size, optimizer)
+    print("train", epochs, batch_size, optimizer, same_name_arg)
 
 
 @tunable("nb_epochs", "other_batch_size", apps="train")

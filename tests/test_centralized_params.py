@@ -89,3 +89,26 @@ def test_get_description_from_docstring(tmp_path, run_example):
         cfg = json.load(f)
     assert "clip_outliers" in str(cfg)
     assert "Description in docstring." in str(cfg)
+
+
+def test_same_name_args(tmp_path, run_example):
+    cfg_path = tmp_path / "test_config"
+    run_example(
+        "examples/app_generate_schema.py",
+        ["--prefix", str(cfg_path)],
+    )
+    schema_path = cfg_path.with_suffix(".schema.json")
+    with schema_path.open() as f:
+        cfg = json.load(f)
+    # Check that both args appear in the config
+    assert "same_name_arg" in str(cfg["$defs"]["Model_Config"]["properties"])
+    assert "same_name_arg" in str(cfg["$defs"]["Train_Config"]["properties"])
+    # Check that the correct values are used during function call
+    code, out, err = run_example(
+        "examples/jsonargparse_app/train_jsonarg_params.py",
+        ["--config", str(schema_path)],
+    )
+    assert code == 0, err
+    print(out)
+    assert "build_model [128, 128] 0.2 sum True root advanced_root same_name_arg_model" in out
+    assert "train 10 32 adam same_name_arg_train" in out

@@ -23,7 +23,7 @@ from tunablex.runtime import write_schema
 
 
 def main():
-    parser = argparse.ArgumentParser(prog="trace_generate_schema")
+    parser = argparse.ArgumentParser(prog="app_generate_schema")
     parser.add_argument(
         "--app",
         choices=["train", "serve"],
