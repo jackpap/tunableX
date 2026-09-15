@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 def _pascalcase_to_snake_case(ns: str) -> str:
     """Convert a namespace name from PascalCase to snake_case."""
-    return re.sub(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", ns).lower()
+    return re.sub(r"(?<=[a-zA-Z0-9])(?=[A-Z][a-z])", "_", ns).lower()
 
 
 def _get_description(cls: type, name: str) -> str | None:
