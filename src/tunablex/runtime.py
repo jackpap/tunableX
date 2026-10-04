@@ -6,23 +6,27 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel, Field, create_model
 
 from .io import load_structured_config
 from .registry import REGISTRY, _ConfigModel
 
 
-def _defaults(model: type[BaseModel]) -> dict:
-    """Extract a partial template, omitting required and data-dependent factory fields."""
-    data = {}
+def _defaults_model(model: type[BaseModel]) -> type[BaseModel]:
+    """Retain field schemas while omitting values that require user input."""
+    fields = {}
     for name, field in model.model_fields.items():
         annotation = field.annotation
         if isinstance(annotation, type) and issubclass(annotation, _ConfigModel):
-            data[name] = _defaults(annotation)
+            fields[name] = (_defaults_model(annotation), Field(default_factory=dict))
         elif not field.is_required() and not field.default_factory_takes_validated_data:
-            data[name] = field.get_default(call_default_factory=True)
-    # Serialization alone must not require missing user input.
-    return TypeAdapter(dict).dump_python(data, mode="json")
+            fields[name] = (annotation, field)
+    return create_model(f"{model.__name__}_Defaults", __config__=model.model_config, **fields)
+
+
+def _defaults(model: type[BaseModel]) -> dict:
+    """Validate and serialize a partial template using each field's Pydantic schema."""
+    return _defaults_model(model)().model_dump(mode="json")
 
 
 def schema_for_app(app: str) -> tuple[dict, dict]:

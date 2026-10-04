@@ -5,10 +5,10 @@ import builtins
 import json
 from enum import Enum
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 import pytest
-from pydantic import Field, ValidationError
+from pydantic import Field, PlainSerializer, ValidationError
 
 from tunablex import add_flags_by_app, build_cfg_from_file_and_args, make_config_for_app, schema_for_app, tunable
 from tunablex.io import load_structured_config
@@ -207,3 +207,29 @@ def test_cli_can_clear_collection_and_nullable_string(parser):
     model = add_flags_by_app(parser, "test")
     args = parser.parse_args(["--values", "--name", "null"])
     assert build_cfg_from_file_and_args(model, args) == {"values": [], "name": None}
+
+
+def test_exported_defaults_use_field_validation_and_serialization():
+    @tunable("required", "count", "encoded", "hidden", namespace="job", apps="export")
+    def run(
+        required: str,
+        count: int = Field(default_factory=lambda: "2", ge=1),
+        encoded: Annotated[int, PlainSerializer(str, return_type=str)] = "3",
+        hidden: str = Field("private", exclude=True),
+    ):
+        pass
+
+    _, defaults = schema_for_app("export")
+    cfg = make_config_for_app("export").model_validate({"job": {"required": "provided"}})
+    expected = cfg.model_dump(mode="json")
+    del expected["job"]["required"]
+    assert defaults == expected == {"job": {"count": 2, "encoded": "3"}}
+
+
+def test_defaults_export_rejects_invalid_field_defaults():
+    @tunable(apps="export")
+    def run(value: int = Field(-1, ge=1)):
+        pass
+
+    with pytest.raises(ValidationError, match="greater_than_equal"):
+        schema_for_app("export")

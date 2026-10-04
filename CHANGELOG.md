@@ -4,6 +4,11 @@
 
 ### Fixes and capabilities
 
+- Validate and serialize exported defaults with their field schemas, preserving
+  annotation serializers and field exclusions.
+- Resolve data-dependent factory inputs by canonical field name within each
+  namespace, including renamed centralized arguments on direct calls.
+
 - Support Python 3.14 deferred annotations without evaluating unrelated fields.
 - Incorporate PR #10's cached per-field annotations for spawned/forkserver workers.
 - Honor positional, keyword and positional-only overrides; preserve nested Python values.

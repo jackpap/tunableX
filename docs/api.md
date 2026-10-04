@@ -32,8 +32,10 @@ At call time, precedence is explicit Python arguments, then the active config,
 then declared defaults. Positional-only and keyword-only arguments are supported.
 Pydantic `Field` defaults and centralized references are resolved before selected
 arguments reach the function. Missing required values raise `TypeError` without
-executing the function. Explicit Python arguments and raw dictionary configs are
-not validated by the decorator; use a composed model to validate external input.
+executing the function. Data-dependent factories see previously resolved selected
+fields by canonical configuration name within their own namespace, even when the
+function uses renamed arguments. Explicit Python arguments and raw dictionary
+configs are not validated by the decorator; use a composed model to validate external input.
 
 ### `TunableParams`
 
@@ -84,9 +86,9 @@ document means `{}`. Scalar values (`false`, `null`) and arrays are invalid JSON
 config roots. Unknown file extensions try JSON and then YAML.
 
 Defaults templates omit required fields and factories that require already
-validated data. Ordinary zero-argument factories are evaluated during defaults
-export. Templates are not guaranteed to be complete valid configs. Schema-only
-export using `Config.model_json_schema()` does not evaluate those factories.
+validated data. Exported defaults retain field validation, serializers and
+exclusions. Ordinary zero-argument factories are evaluated during defaults export.
+Templates are not guaranteed to be complete valid configs. Schema-only export using `Config.model_json_schema()` does not evaluate those factories.
 
 `write_schema` creates parent directories, writes UTF-8 JSON with a trailing newline,
 and overwrites files with the same names. `yaml=None` also writes YAML if PyYAML is

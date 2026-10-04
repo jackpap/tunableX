@@ -182,3 +182,23 @@ def test_inherited_fields_and_plain_shadowing():
     assert HTTPParams.count.value.default == 2
     assert ModelXParams.count == 3
     assert ModelXParams.namespace == "model_x"
+
+
+@pytest.mark.filterwarnings("error")
+def test_renamed_factory_dependencies_use_canonical_names_per_namespace():
+    class FirstParams(TunableParams):
+        count: int = Field(2)
+        doubled: int = Field(default_factory=lambda data: data["count"] * 2)
+
+    class SecondParams(TunableParams):
+        count: int = Field(10)
+        doubled: int = Field(default_factory=lambda data: data["count"] * 2)
+
+    @tunable(apps="factories")
+    def run(n=FirstParams.count, other=SecondParams.count, d=FirstParams.doubled, twice=SecondParams.doubled):
+        return n, other, d, twice
+
+    assert run() == (2, 10, 4, 20)
+    assert run(3, other=7) == (3, 7, 6, 14)
+    with use_config(make_config_for_app("factories")()):
+        assert run() == (2, 10, 4, 20)

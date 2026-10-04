@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from itertools import pairwise
 from typing import TYPE_CHECKING, Annotated, Any, get_type_hints
 
-from pydantic import TypeAdapter
+from pydantic import Field, TypeAdapter
 from pydantic.fields import FieldInfo
 
 from .annotations import raw_annotations, signature
@@ -334,10 +334,12 @@ def tunable(
         def prepare(args, kwargs):
             bound = sig.bind_partial(*args, **kwargs)
             cfg = _active_cfg.get()
+            validated_by_namespace = {}
             for name, (ns, key, default, typ) in parameters.items():
                 if name in bound.arguments:
                     if isinstance(bound.arguments[name], (TunableParamData, FieldInfo)):
                         raise TypeError(f"{fn.__qualname__}.{name} requires a value, not parameter metadata")
+                    validated_by_namespace.setdefault(ns, {})[key] = bound.arguments[name]
                     continue
                 section = _resolve_nested_section(cfg, ns)
                 if isinstance(section, dict) and key in section:
@@ -348,12 +350,24 @@ def tunable(
                 elif isinstance(default, FieldInfo):
                     if default.is_required():
                         raise TypeError(f"Missing required tunable {ns + '.' if ns else ''}{key} for {fn.__qualname__}")
-                    bound.arguments[name] = TypeAdapter(Annotated[typ, default]).validate_python(
-                        default.get_default(call_default_factory=True, validated_data=bound.arguments)
+                    # The factory is evaluated explicitly with canonical dependency names.
+                    # Its default metadata is not valid in a standalone TypeAdapter schema.
+                    info = default.asdict()
+                    attributes = {
+                        k: v for k, v in info["attributes"].items() if k not in {"default", "default_factory"}
+                    }
+                    validation_field = Field(**attributes)
+                    validation_field.metadata = list(info["metadata"])
+                    bound.arguments[name] = TypeAdapter(Annotated[typ, validation_field]).validate_python(
+                        default.get_default(
+                            call_default_factory=True, validated_data=validated_by_namespace.get(ns, {})
+                        )
                     )
                 elif default is not ...:
                     # Leave ordinary Python defaults alone unless binding positional-only gaps.
                     bound.arguments[name] = default
+                if name in bound.arguments:
+                    validated_by_namespace.setdefault(ns, {})[key] = bound.arguments[name]
             return bound
 
         if inspect.iscoroutinefunction(fn):
