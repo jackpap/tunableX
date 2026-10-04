@@ -1,9 +1,9 @@
-"""Centralized tunable parameters using TunableParameters inheritance.
+"""Centralized tunable parameters using TunableParams inheritance.
 
-Main -> base namespace ("main")
-Model(Main) -> "model"
-Preprocess(Model) -> "model.preprocess"
-Train(Main) -> "train"
+MainParams -> root fields
+ModelParams -> "model"
+ModelParams.Preprocess -> "model.preprocess"
+TrainParams -> "train"
 """
 
 from __future__ import annotations

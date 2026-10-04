@@ -42,14 +42,13 @@ def test_jsonargparse_app_override_precedence(tmp_path, run_example):
     assert code == 0, err
     # Expect overridden values
     assert "submodule_fun 10 False" in out
-    assert "sumbodule_class -5 False"
+    assert "submodule_class -5 False" in out
     assert "submodule_class_method 0 True" in out
     assert "build_model 512 0.15" in out
     assert "train 50 8 sgd" in out
 
 
 @pytest.mark.skipif(pytest.importorskip("jsonargparse") is None, reason="jsonargparse not installed")
-@pytest.mark.skip(reason="AST test cannot pass yet.")
 def test_jsonargparse_trace_override_precedence(tmp_path, run_example):
     cfg_path = tmp_path / "train_config.json"
     data = {
@@ -80,7 +79,7 @@ def test_jsonargparse_trace_override_precedence(tmp_path, run_example):
     assert code == 0, err
     # Expect overridden values
     assert "submodule_fun 10 False" in out
-    assert "sumbodule_class -5 False"
+    assert "submodule_class -5 False" in out
     assert "submodule_class_method 0 True" in out
     assert "preprocess True zscore 3.0" in out
     assert "build_model 64 0.25" in out

@@ -3,21 +3,19 @@ from __future__ import annotations
 import multiprocessing
 import sys
 import types
-from typing import Annotated
-from typing import Literal
+from typing import Annotated, Literal
 
 import pytest
 from pydantic import Field
 
-from tunablex import TunableParams
-from tunablex import tunable
+from tunablex import TunableParams, tunable
 
 PROBLEM_SPLITS = {"train_8": [], "valid_8": []}
 
 
 class TypeResolutionParams(TunableParams):
     literal: Literal["fast", "safe"] = Field("fast")
-    dynamic_literal: Literal[*PROBLEM_SPLITS] = Field("train_8")  # ruff: ignore[F821]
+    dynamic_literal: Literal[tuple(PROBLEM_SPLITS)] = Field("train_8")  # ruff: ignore[F821]
     annotated: Annotated[int | None, "metadata"] = Field(None)
     unresolved: MissingAtRuntime = Field(None)  # pyright: ignore[reportUndefinedVariable] # noqa: F821
 
@@ -50,7 +48,7 @@ from tunablex import TunableParams
 PROBLEM_SPLITS = {"train_8": [], "valid_8": []}
 
 class RunpyParams(TunableParams):
-    split: Literal[*PROBLEM_SPLITS] = Field("train_8")
+    split: Literal[tuple(PROBLEM_SPLITS)] = Field("train_8")
 """
     monkeypatch.delitem(sys.modules, "__mp_main__", raising=False)
     namespace = {"__name__": "__mp_main__", "__file__": "<runpy-test>"}
@@ -70,7 +68,7 @@ from tunablex import TunableParams
 PROBLEM_SPLITS = {"train_8": [], "valid_8": []}
 
 class RunpyParams(TunableParams):
-    split: Literal[*PROBLEM_SPLITS] = Field("train_8")
+    split: Literal[tuple(PROBLEM_SPLITS)] = Field("train_8")
 """
     monkeypatch.setitem(sys.modules, "__mp_main__", types.ModuleType("__mp_main__"))
     namespace = {"__name__": "__mp_main__", "__file__": "<runpy-test>"}
@@ -83,9 +81,8 @@ def test_unrelated_unresolvable_annotation_is_not_evaluated():
     assert TypeResolutionParams.literal.value.default == "fast"
 
 
-def test_function_rejects_tunable_param_data_without_config():
-    with pytest.raises(TypeError, match="would receive TunableParamData"):
-        type_resolution_fn()
+def test_function_resolves_tunable_param_default_without_config():
+    assert type_resolution_fn() == "fast"
 
 
 def test_accessing_unresolvable_annotation_has_contextual_error():
@@ -94,25 +91,34 @@ def test_accessing_unresolvable_annotation_has_contextual_error():
 
 
 def _spawn_read_type(queue):
-    queue.put((
-        TypeResolutionParams.literal.typ == Literal["fast", "safe"],
-        TypeResolutionParams.dynamic_literal.typ == Literal["train_8", "valid_8"],
-    ))
+    queue.put(
+        (
+            TypeResolutionParams.literal.typ == Literal["fast", "safe"],
+            TypeResolutionParams.dynamic_literal.typ == Literal["train_8", "valid_8"],
+        )
+    )
 
 
-def test_type_resolution_works_in_worker():
-    methods = multiprocessing.get_all_start_methods()
-    if "spawn" in methods:
-        start_method = "spawn"
-    elif "forkserver" in methods:
-        start_method = "forkserver"
-    else:
-        pytest.skip("Neither forkserver nor spawn is available")
-
+@pytest.mark.parametrize(
+    "start_method", [method for method in ("spawn", "forkserver") if method in multiprocessing.get_all_start_methods()]
+)
+def test_type_resolution_works_in_worker(start_method):
     context = multiprocessing.get_context(start_method)
     queue = context.Queue()
     process = context.Process(target=_spawn_read_type, args=(queue,))
-    process.start()
-    process.join(timeout=10)
-    assert process.exitcode == 0
-    assert queue.get(timeout=2) == (True, True)
+    try:
+        try:
+            process.start()
+        except PermissionError as exc:
+            if start_method == "forkserver":
+                pytest.skip(f"Environment does not permit forkserver sockets: {exc}")
+            raise
+        process.join(timeout=10)
+        assert process.exitcode == 0
+        assert queue.get(timeout=2) == (True, True)
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
+        queue.close()
+        queue.join_thread()

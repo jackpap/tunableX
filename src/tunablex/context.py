@@ -1,21 +1,24 @@
-from __future__ import annotations
+"""Task-local configuration contexts with nested and exception-safe restoration."""
 
-import contextvars
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from pydantic import BaseModel
 
-
-class use_config:
-    def __init__(self, cfg):
-        self.cfg = cfg
-
-    def __enter__(self):
-        self._tok = _active_cfg.set(self.cfg)
-        return self.cfg
-
-    def __exit__(self, et, e, tb):
-        _active_cfg.reset(self._tok)
+_active_cfg: ContextVar[BaseModel | dict | None] = ContextVar("tunablex_active_cfg", default=None)
 
 
-# Active config context used at runtime for auto-injection
-_active_cfg = contextvars.ContextVar[BaseModel]("tunablex_active_cfg", default=None)
+@contextmanager
+def use_config(cfg: BaseModel | dict):
+    """Activate a validated config (or raw dict) for this thread/async task.
+
+    Explicit function arguments win. Contexts do not automatically cross worker
+    processes or new threads; activate a config in each worker.
+    """
+    if not isinstance(cfg, (BaseModel, dict)):
+        raise TypeError("use_config expects a Pydantic model or dict")
+    token = _active_cfg.set(cfg)
+    try:
+        yield cfg
+    finally:
+        _active_cfg.reset(token)

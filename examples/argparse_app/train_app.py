@@ -1,10 +1,9 @@
-import examples.myapp.pipeline_params as pipeline  # registers @tunable
-from jsonargparse import ArgumentParser  # could be argparse as well
+from argparse import ArgumentParser
+
+import examples.myapp.pipeline as pipeline  # registers @tunable
 
 from tunablex import use_config
-from tunablex.runtime import load_config_for_app
-from tunablex.runtime import schema_for_app
-from tunablex.runtime import write_schema
+from tunablex.runtime import load_config_for_app, schema_for_app, write_schema
 
 if __name__ == "__main__":
     parser = ArgumentParser(prog="train_app")
@@ -22,6 +21,8 @@ if __name__ == "__main__":
         write_schema(args.schema_prefix, schema, defaults)
         print(f"Wrote {args.schema_prefix}.schema.json and {args.schema_prefix}.json")
     else:
+        if not args.config:
+            parser.error("--config is required unless --gen-schema is used")
         cfg = load_config_for_app(app="train", json_path=args.config)
         with use_config(cfg):
             pipeline.train_main()

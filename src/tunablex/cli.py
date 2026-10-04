@@ -5,9 +5,7 @@ import importlib
 import json
 import sys
 
-from .runtime import schema_for_app
-from .runtime import schema_for_entrypoint
-from .runtime import write_schema
+from .runtime import schema_for_app, schema_for_entrypoint, write_schema
 
 
 def _import_modules(mods):
@@ -35,7 +33,7 @@ def main(argv=None):
 
     t = sub.add_parser("analyze", help="Emit schema/defaults by static AST analysis of a module:function entrypoint.")
     t.add_argument("--entry", required=True)
-    t.add_argument("--import", dest="imports", nargs="+", required=True)
+    t.add_argument("--import", dest="imports", nargs="+", default=[])
     t.add_argument(
         "--sys-path", dest="sys_paths", nargs="+", default=[], help="Paths to insert into sys.path before imports."
     )
@@ -54,15 +52,17 @@ def main(argv=None):
         return 0
 
     if args.cmd == "analyze":
-        modname, funcname = args.entry.split(":")
+        if ":" not in args.entry:
+            p.error("--entry must have the form module:function")
+        modname, funcname = args.entry.rsplit(":", 1)
+        if not modname or not funcname:
+            p.error("--entry must have the form module:function")
         fn = getattr(importlib.import_module(modname), funcname)
-        schema, defaults, touched = schema_for_entrypoint(fn)
+        schema, defaults = schema_for_entrypoint(fn)
         if args.out:
             write_schema(args.out, schema, defaults)
         else:
-            print(
-                json.dumps({"schema": schema, "defaults": defaults, "touched": sorted(touched)}, indent=2, default=str)
-            )
+            print(json.dumps({"schema": schema, "defaults": defaults}, indent=2, default=str))
         return 0
 
     return 1

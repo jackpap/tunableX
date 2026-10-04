@@ -2,8 +2,7 @@ import examples.myapp.pipeline as pipeline
 from jsonargparse import ArgumentParser
 
 from tunablex import use_config
-from tunablex.cli_helpers import add_flags_by_app
-from tunablex.cli_helpers import build_cfg_from_file_and_args
+from tunablex.cli_helpers import add_flags_by_app, build_cfg_from_file_and_args
 
 if __name__ == "__main__":
     # Use app-tag based flag generation since we know we're the 'train' app.

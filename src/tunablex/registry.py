@@ -8,69 +8,18 @@
 
 from __future__ import annotations
 
-import ast
-import inspect
-import sys
-from contextlib import suppress
+import keyword
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
-from typing import Annotated
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel
-from pydantic import Field
-from pydantic import create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model
 from pydantic.fields import FieldInfo
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 
-def _gather_called_function_names(entry_fn: Callable, called: set):
-    """Return set of fully qualified function names that are reachable from entry_fn's module.
-
-    This performs a simple static AST walk starting from the entry function's
-    body and collects names of function calls. It does not follow dynamic
-    dispatch or conditional imports. The goal is only to approximate which
-    @tunable-decorated functions may be used so we can compose an AppConfig
-    without executing user code.
-    """
-    try:
-        src = inspect.getsource(entry_fn)
-    except (OSError, TypeError):  # source not available
-        return
-
-    tree = ast.parse(src)
-    sub_called = set()
-
-    class CustomVisitor(ast.NodeVisitor):
-        def visit_Call(self, node: ast.Call):
-            """Add the name of called functions to the `sub_called` set."""
-            name_parts: list[str] = []
-            cur = node.func
-            while isinstance(cur, ast.Attribute):
-                name_parts.append(cur.attr)
-                cur = cur.value
-            if isinstance(cur, ast.Name):
-                name_parts.append(cur.id)
-            fn_fullname = ".".join(reversed(name_parts))
-            if fn_fullname:
-                sub_called.add(fn_fullname)
-            self.generic_visit(node)
-
-        def visit_ClassDef(self, node: ast.ClassDef):
-            """Add the __init__ of called classes to the `sub_called` set."""
-            sub_called.add(f"{node.name}.__init__")
-            self.generic_visit(node)
-
-    CustomVisitor().visit(tree)
-    for sub_fn_fullname in sub_called.difference(called):
-        called.add(sub_fn_fullname)
-        sub_fn_name = sub_fn_fullname.split(".")[-1]
-        with suppress(Exception):
-            sub_fn = vars(sys.modules[entry_fn.__module__]).get(sub_fn_name)
-            if sub_fn is not None:
-                _gather_called_function_names(sub_fn, called)
+from .analysis import called_functions
 
 
 @dataclass
@@ -83,13 +32,13 @@ class TunableArg:
     typ: Any
     """The argument's type."""
 
-    default: Field | Any
+    default: Any
     """The argument's default value."""
 
     fn_names: set[str]
     """The names of the functions that call the argument.
     Used for config generation with AST.
-    The same function can be present twice, with and without the module name, if any.
+    Fully qualified names prevent collisions across modules.
     """
 
     namespace: str
@@ -122,6 +71,12 @@ class Node:
         self.path = path
 
 
+class _ConfigModel(BaseModel):
+    """Base for generated namespace models, distinct from user-supplied model fields."""
+
+    model_config = ConfigDict(extra="forbid", validate_default=True, populate_by_name=True)
+
+
 class TunableRegistry:
     """Holds all registered tunables grouped by namespace, and builds AppConfig."""
 
@@ -133,73 +88,70 @@ class TunableRegistry:
         self.entry_tree = Node("")
 
     def register(self, entry: TunableArg) -> None:
-        """Register a tunable entry, merging with an existing namespace if present."""
+        """Register a field, rejecting ambiguous paths and incompatible declarations."""
+        segments = entry.namespace.split(".") if entry.namespace else []
+        for name in [*segments, entry.name]:
+            if not name.isidentifier() or keyword.iskeyword(name) or name.startswith("_") or hasattr(BaseModel, name):
+                raise ValueError(f"Invalid or reserved config field name: {name!r}")
         node = self.entry_tree
-        if entry.namespace:
-            fullpath = entry.namespace.split(".")
-            path = []
-            for p in fullpath:
-                path.append(p)
-                node = node.children.setdefault(p, Node(".".join(path)))
-        existing_entry = node.entries.get(entry.name)
-        if existing_entry is None:
+        for segment in segments:
+            if segment in node.entries:
+                raise ValueError(f"Namespace {entry.namespace!r} collides with field {segment!r}")
+            node = node.children.setdefault(segment, Node(".".join(filter(None, [node.path, segment]))))
+        if entry.name in node.children:
+            raise ValueError(f"Field {entry.name!r} collides with a namespace in {entry.namespace!r}")
+        existing = node.entries.get(entry.name)
+        if existing is None:
             node.entries[entry.name] = entry
             return
+        if existing.typ != entry.typ:
+            raise ValueError(
+                f"Conflicting type for arg '{entry.name}' in namespace '{entry.namespace}': "
+                f"{existing.typ} vs {entry.typ}"
+            )
+        old = existing.default.asdict() if isinstance(existing.default, FieldInfo) else existing.default
+        new = entry.default.asdict() if isinstance(entry.default, FieldInfo) else entry.default
+        if old != new:
+            raise ValueError(
+                f"Conflicting default value for arg '{entry.name}' in namespace '{entry.namespace}': "
+                f"{existing.default} vs {entry.default}"
+            )
+        existing.apps.update(entry.apps)
+        existing.fn_names.update(entry.fn_names)
 
-        # Ensure the type and default are the same for already existing entries
-        if existing_entry.typ != entry.typ:
-            msg = f"Conflicting type for arg '{entry.name}' in namespace '{entry.namespace}': "
-            f"{existing_entry.typ} vs {entry.typ}"
-            raise ValueError(msg)
-        if existing_entry.default != entry.default:
-            msg = f"Conflicting default value for arg '{entry.name}' in namespace '{entry.namespace}': "
-            f"{existing_entry.default} vs {entry.default}"
-            raise ValueError(msg)
-
-        # Merge the apps and the functions
-        existing_entry.apps.update(entry.apps)
-        existing_entry.fn_names.update(entry.fn_names)
+    def _build(self, select, node: Node | None = None) -> type[BaseModel]:
+        node = self.entry_tree if node is None else node
+        fields = {}
+        for name, entry in node.entries.items():
+            if not select(entry):
+                continue
+            default = entry.default
+            if isinstance(default, FieldInfo):
+                info = default.asdict()
+                default = Field(**info["attributes"])
+                default.metadata = list(info["metadata"])
+            fields[name] = (entry.typ, default)
+        for name, child in node.children.items():
+            child_model = self._build(select, child)
+            if child_model.model_fields:
+                # Required descendants make the section required in both validation and JSON Schema.
+                required = any(field.is_required() for field in child_model.model_fields.values())
+                fields[name] = (child_model, ... if required else Field(default_factory=dict))
+        model_name = f"{node.path.title().replace('_', '').replace('.', '_')}_Config"
+        return create_model(
+            model_name,
+            __base__=_ConfigModel,
+            **fields,
+        )
 
     def build_config_for_app(self, app: str, node: Node | None = None) -> type[BaseModel]:
-        """Recursively create an AppConfig model for a given app."""
-        node = self.entry_tree if node is None else node
-        fields = {}
-        for name, entry in node.entries.items():
-            if app in entry.apps or "ALL" in entry.apps:
-                if isinstance(entry.default, FieldInfo):
-                    # Recreate the Field to merge the description, see https://docs.pydantic.dev/latest/examples/dynamic_models/
-                    default_dict = entry.default.asdict()
-                    fields[name] = Annotated[entry.typ, *default_dict["metadata"], Field(**default_dict["attributes"])]
-                else:
-                    fields[name] = (entry.typ, entry.default)
-        for name, child in node.children.items():
-            child_model = self.build_config_for_app(app, child)
-            if child_model.model_fields:
-                fields[name] = (child_model, Field(default_factory=child_model))
-
-        model_name = f"{node.path.title().replace('_', '').replace('.', '_')}_Config"
-        return create_model(model_name, **fields)
-
-    def _build_config_from_called(self, called: set[str], node: Node | None = None) -> type[BaseModel]:
-        """Build a config based on a the set of functions called."""
-        node = self.entry_tree if node is None else node
-        fields = {}
-        for name, entry in node.entries.items():
-            if entry.fn_names.intersection(called):
-                fields[name] = (entry.typ, entry.default)
-        for name, child in node.children.items():
-            child_model = self._build_config_from_called(called, child)
-            if child_model.model_fields:
-                fields[name] = (child_model, Field(default_factory=child_model))
-
-        model_name = f"{node.path.title().replace('_', '').replace('.', '_')}_Config"
-        return create_model(model_name, **fields)
+        """Build a model for an app, including untagged (ALL) parameters."""
+        return self._build(lambda entry: app in entry.apps or "ALL" in entry.apps, node)
 
     def build_config_for_entrypoint(self, entrypoint: Callable) -> type[BaseModel]:
-        """Build a config based on all functions calls from an entry point."""
-        called = {entrypoint.__qualname__}
-        _gather_called_function_names(entrypoint, called)
-        return self._build_config_from_called(called)
+        """Build a config from statically resolved functions, without calling them."""
+        called = called_functions(entrypoint)
+        return self._build(lambda entry: bool(entry.fn_names.intersection(called)))
 
 
 REGISTRY = TunableRegistry()

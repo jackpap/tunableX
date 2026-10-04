@@ -1,235 +1,201 @@
 <p align="center">
-  <img src="assets/tunableX-title.png" alt="tunableX banner" width="100%" />
+  <img src="https://raw.githubusercontent.com/jackpap/tunableX/main/assets/tunableX-title.png" alt="tunableX" width="100%" />
 </p>
+
 # tunableX
 
-Function-first **tunable parameters** for Generated flags look like:
-```
---debug --model.hidden_units --model.dropout --train.epochs --train.batch_size --train.optimizer
-```
-Root-level parameters (from `Main` class or no namespace) appear directly as `--param`, while nested parameters use dotted notation. Boolean flags support `--no-...` negation via `jsonargparse`'s `BooleanOptionalAction`.n apps — with:
+**Typed configuration, declared where your Python functions use it.**
 
-- **Ergonomic @tunable decorator** (declare per‑function user parameters right where they live).
-- **Centralized parameter classes** (`TunableParameters`) for a single source of truth with inheritance-based namespaces.
-- **Automatic Pydantic models → JSON & JSON Schema** (rich defaults, validation constraints, literals, Paths, etc.).
-- **Two composition strategies**:
-  - By **app tags** (`apps=("train", "serve", ...)`) for explicit executable groupings.
-  - By **static AST call graph of an entrypoint** (no tags needed) – generate a config from just a function without executing user code.
-- **Runtime auto‑injection** (`use_config`) so decorated functions receive values transparently.
-- **CLI flag generation** (argparse / jsonargparse) with defaults & help text sourced from Pydantic Field metadata.
-- **Deterministic merge order**: defaults ← optional config file ← CLI overrides.
+`tunableX` turns selected function arguments into Pydantic configuration models,
+JSON Schema, JSON/YAML defaults and command-line flags. Compose a configuration
+using app tags or static analysis of an entrypoint, then inject it with `use_config`.
 
-> NOTE: Previous versions used runtime tracing (schema_by_trace, add_flags_by_trace via tracing). This has been replaced by **static AST analysis** for zero‑execution safety and reproducibility. The compatibility alias `add_flags_by_trace` still works but now delegates to static analysis.
+- Keep parameters beside the logic, or share them through `TunableParams` classes.
+- Validate types, constraints and unknown settings with Pydantic v2.
+- Load JSON, YAML or TOML; explicit CLI flags override file values and defaults.
+- Support ordinary functions, methods, static/class methods and async functions.
+- Discover calls without running the entrypoint; use tags for dynamic dispatch.
 
----
-## Install
+## Installation
+
+Python **3.10+** and Pydantic **2.12.5+ (<3)** are required.
+
 ```bash
-pip install tunablex  # (or your project env)
+pip install tunablex                 # JSON, TOML and standard argparse
+pip install 'tunablex[yaml]'         # add YAML
+pip install 'tunablex[jsonargparse]'  # optional parser integration
+pip install 'tunablex[all]'          # both optional integrations
 ```
 
----
-## Quick Tour
+The base package does not require PyYAML or jsonargparse. On Python 3.10,
+`tomli` is installed automatically for TOML support.
 
-### 1. Declare tunables
+## A complete example
 
-**Option A: Direct decoration (explicit namespaces)**
+Save as `train.py`:
+
 ```python
-from typing import Literal
+from argparse import ArgumentParser
 from pydantic import Field
-from tunablex import tunable
+from tunablex import tunable, add_flags_by_app, build_cfg_from_file_and_args, use_config
 
-@tunable("hidden_units", "dropout", namespace="model", apps=("train",))
-def build_model(hidden_units: int = Field(128, ge=1, description="Hidden units"),
-                dropout: float = Field(0.2, ge=0.0, le=1.0, description="Dropout")):
-    ...
+@tunable(namespace="train", apps="training")
+def train(epochs: int = Field(10, ge=1, description="Number of training epochs"),
+          learning_rate: float = Field(0.001, gt=0),
+          verbose: bool = False):
+    print(epochs, learning_rate, verbose)
 
-@tunable("epochs", "batch_size", "optimizer", namespace="train", apps=("train",))
-def train(epochs: int = Field(10, ge=1, description="Epochs"),
-          batch_size: int = Field(32, ge=1, description="Batch size"),
-          optimizer: Literal["adam", "sgd"] = Field("adam", description="Optimizer")):
-    ...
+if __name__ == "__main__":
+    parser = ArgumentParser()
+    parser.add_argument("--config", help="JSON, YAML or TOML configuration")
+    Config = add_flags_by_app(parser, "training")
+    args = parser.parse_args()
+    cfg = Config.model_validate(build_cfg_from_file_and_args(Config, args))
+    with use_config(cfg):
+        train()
 ```
 
-**Option B: Centralized parameters (inheritance-based namespaces)**
-```python
-from typing import Literal
-from pydantic import Field
-from tunablex import tunable, TunableParameters
-
-# Define your parameter schema once
-class Main(TunableParameters):
-    """Root-level parameters (appear as --param in CLI, at JSON root)."""
-    debug: bool = Field(False, description="Enable debug mode")
-
-class Model(Main):
-    """Model parameters (--model.param, under 'model' in JSON)."""
-    hidden_units: int = Field(128, ge=1, description="Hidden units")
-    dropout: float = Field(0.2, ge=0.0, le=1.0, description="Dropout")
-
-class Train(Main):
-    """Training parameters (--train.param, under 'train' in JSON)."""
-    epochs: int = Field(10, ge=1, description="Epochs")
-    batch_size: int = Field(32, ge=1, description="Batch size")
-    optimizer: Literal["adam", "sgd"] = Field("adam", description="Optimizer")
-
-# Use the centralized parameters in your functions
-@tunable("hidden_units", "dropout", apps=("train",))
-def build_model(hidden_units=Model.hidden_units, dropout=Model.dropout, debug=Main.debug):
-    if debug:
-        print(f"Building model: {hidden_units} units, {dropout} dropout")
-    ...
-
-@tunable("epochs", "batch_size", "optimizer", apps=("train",))
-def train(epochs=Train.epochs, batch_size=Train.batch_size, optimizer=Train.optimizer):
-    print(f"Training: {epochs} epochs, batch {batch_size}, optimizer {optimizer}")
-    ...
-```
-
-The centralized approach provides a **single source of truth** for your parameters—define once, use everywhere! The class hierarchy automatically determines namespaces: `Model(Main)` creates the "model" namespace, and parameters from `Main` appear at the root level.
-
-### 2. Compose a config model (Explicit App Tags)
-```python
-from tunablex import schema_for_apps, defaults_for_apps, make_app_config_for
-
-schema = schema_for_apps("train")        # JSON Schema dict
-defaults = defaults_for_apps("train")    # Default values dict
-AppConfig = make_app_config_for("train") # Pydantic model type
-```
-
-### 3. Compose a config model (Static Entry Analysis – No Tags)
-```python
-from tunablex import schema_by_entry_ast, make_app_config_for_entry
-
-# Suppose train_main() calls several @tunable functions (directly or nested)
-from mypkg.pipeline import train_main
-
-schema, defaults, namespaces = schema_by_entry_ast(train_main)
-AppConfig = make_app_config_for_entry(train_main)
-```
-The static analyzer parses the entrypoint’s source and gathers directly called function names (simple, safe heuristic) to select matching registered tunable namespaces.
-
-### 4. Use a config at runtime
-```python
-from tunablex import use_config
-cfg = AppConfig(**{...})  # or AppConfig.model_validate(loaded_json)
-with use_config(cfg):
-    train_main()  # All @tunable calls see their section injected
-```
-
-### 5. Generate schema & defaults files (entrypoint)
-```python
-from tunablex import schema_by_entry_ast, write_schema
-schema, defaults, _ = schema_by_entry_ast(train_main)
-write_schema("train_config", schema, defaults)  # writes train_config.schema.json + train_config.json
-```
-
----
-## CLI Integration
-
-### jsonargparse (App Tags)
-```python
-from jsonargparse import ArgumentParser
-from tunablex import add_flags_by_app, build_cfg_from_file_and_args, use_config
-import examples.myapp.pipeline as pipeline
-
-parser = ArgumentParser(prog="train_jsonarg_app")
-parser.add_argument("--config", help="Optional config JSON")
-AppConfig = add_flags_by_app(parser, app="train")
-args = parser.parse_args()
-cfg_dict = build_cfg_from_file_and_args(AppConfig, args)
-cfg = AppConfig.model_validate(cfg_dict)
-with use_config(cfg):
-    pipeline.train_main()
-```
-
-### jsonargparse (Static Entry Analysis)
-```python
-from jsonargparse import ArgumentParser
-from tunablex import add_flags_by_entry, build_cfg_from_file_and_args, use_config
-import examples.myapp.pipeline as pipeline
-
-parser = ArgumentParser(prog="train_jsonarg_trace")  # name preserved for backwards compat
-parser.add_argument("--config", help="Optional config JSON")
-AppConfig = add_flags_by_entry(parser, pipeline.train_main)  # or add_flags_by_trace(...)
-args = parser.parse_args()
-cfg_dict = build_cfg_from_file_and_args(AppConfig, args)
-cfg = AppConfig.model_validate(cfg_dict)
-with use_config(cfg):
-    pipeline.train_main()
-```
-Generated flags look like:
-```
---model.hidden_units --model.dropout --model.preprocess.dropna ... --train.epochs --train.batch_size --train.optimizer
-```
-Boolean flags support `--no-...` negation via `jsonargparse`’s `BooleanOptionalAction`.
-
-### argparse (Entry Analysis)
-See `examples/argparse_trace/train_trace.py` for schema generation & loading using static analysis (`schema_by_entry_ast`, `load_config_for_entry`).
-
----
-## Config Merge Order
-1. Pydantic defaults (from each `@tunable` Field / default value)
-2. JSON file loaded via `--config` (if provided)
-3. CLI overrides (flags explicitly present on the command line)
-
-This precedence is verified by the test suite (`tests/test_overrides.py`).
-
----
-## API Reference (Exports)
-- Decorator: `tunable`
-- Centralized parameters: `TunableParameters` (base class for inheritance-based namespaces)
-- Composition (apps): `make_app_config_for`, `schema_for_apps`, `defaults_for_apps`, `load_app_config`
-- Composition (entry): `make_app_config_for_entry`, `schema_by_entry_ast`, `load_config_for_entry`
-- Schema output: `write_schema`
-- Runtime: `use_config`
-- CLI helpers: `add_flags_by_app`, `add_flags_by_entry`, `add_flags_by_trace` (alias), `build_cfg_from_file_and_args`
-
----
-## Migration From Tracing
-Previous API: `schema_by_trace`, `add_flags_by_trace(entrypoint)` performed runtime execution to discover call chains. These have been superseded by **static AST analysis**:
-- Use `schema_by_entry_ast(entrypoint)` instead of `schema_by_trace`.
-- Use `add_flags_by_entry` (alias: `add_flags_by_trace`) for CLI flag generation.
-Benefits:
-- No side‑effects or data loading just to build a config schema.
-- Faster repeated schema generation in CI / docs.
-- Works in restrictive or sandboxed environments.
-
----
-## Examples Directory
-- `examples/myapp/pipeline.py` – shared tunable functions (traditional approach).
-- `examples/myapp/params.py` + `pipeline_params.py` – centralized `TunableParameters` approach.
-- `examples/argparse_app/train_app.py` – classic app‑tag flow.
-- `examples/jsonargparse_app/train_jsonarg_app.py` – jsonargparse + tags.
-- `examples/jsonargparse_app/train_jsonarg_params.py` – jsonargparse + centralized parameters.
-- `examples/argparse_trace/train_trace.py` – entrypoint static analysis with schema generation.
-- `examples/jsonargparse_trace/train_jsonarg_trace.py` – jsonargparse + static analysis.
-- `examples/trace_generate_schema.py` – write schema + defaults to disk (AST based).
-
-Run tests:
 ```bash
-pytest -q
+python train.py --train.epochs 25 --train.verbose
+python train.py --config train.json --no-train.verbose
+python train.py --help
 ```
 
----
-## Philosophy
-Keep tunable definition *close to the logic*; avoid giant central configs. Let the decorator accumulate structure automatically while remaining explicit and type‑checked. Provide zero‑execution schema generation so packaging, documentation, and deployment pipelines stay safe and reproducible.
+`train.json` can contain only the values you want to change:
 
----
-## Contributors
+```json
+{"train": {"epochs": 20, "learning_rate": 0.01}}
+```
 
-Thanks to all the people who have contributed to tunableX:
+Precedence is **function/model defaults → file → explicit CLI flags**.
+Explicit Python arguments have the final say: `train(epochs=3)` uses `3` even
+inside an active config. A direct `train()` outside a context resolves declared
+`Field` defaults too; metadata objects are never passed as selected argument values.
 
-- **Jacques PAPPER** (@jackpap) - Original author and maintainer  
-- **Vincent Drouet** (@vincentdrouet) - Core contributor
+## Shared parameter declarations
 
-### AI Development Assistance
-- **Claude Sonnet 4** - implementation
-- **ChatGPT 5** - implementation
+Use `Field` attributes on a `TunableParams` subclass. A class name becomes a
+snake_case namespace with the `Params` suffix removed; `MainParams` and
+`RootParams` represent the root. **Nesting/aliases**, rather than inheritance,
+create nested namespaces. Inheritance reuses fields within the subclass namespace.
 
-See [CONTRIBUTORS.md](CONTRIBUTORS.md) for more details.
+```python
+from pydantic import Field
+from tunablex import TunableParams, make_config_for_app, tunable, use_config
 
-We welcome contributions! Feel free to open issues, submit PRs, or reach out with ideas.
+class OptimizerParams(TunableParams):
+    rate: float = Field(0.01, gt=0, description="Learning rate")
 
----
-## License
-MIT
+class TrainParams(TunableParams):
+    epochs: int = Field(10, ge=1)
+    Optimizer = OptimizerParams
+
+@tunable(apps="training")
+def step(epochs=TrainParams.epochs, lr=TrainParams.Optimizer.rate):
+    return epochs, lr
+
+Config = make_config_for_app("training")
+with use_config(Config.model_validate({"train": {"optimizer": {"rate": 0.1}}})):
+    assert step() == (10, 0.1)
+```
+
+This exposes `--train.epochs` and `--train.optimizer.rate`; a local argument can
+have a different name (`lr`). Reusing `OptimizerParams` under multiple parents
+keeps each namespace independent. A string immediately following a field
+assignment supplies its description when `Field(description=...)` is absent.
+
+## Composition and schema generation
+
+Import your decorated functions before composing a model.
+
+```python
+from tunablex import make_config_for_app, schema_for_app, write_schema
+
+Config = make_config_for_app("training")
+schema, defaults = schema_for_app("training")
+write_schema("config/train", schema, defaults, yaml=False)
+```
+
+This writes `config/train.schema.json` and `config/train.json`. Omit `yaml=False`
+to also write `.yml` when PyYAML is installed, or set `yaml=True` to require it.
+Required values are omitted from defaults templates and remain required by the
+schema. A template with required fields must be completed before use.
+
+You can discover an entrypoint's reachable functions instead of tagging them:
+
+```python
+from tunablex import make_config_for_entry, schema_for_entrypoint
+from myapp.pipeline import train_main
+
+Config = make_config_for_entry(train_main)
+schema, defaults = schema_for_entrypoint(train_main)
+```
+
+Discovery follows direct functions, imported/module aliases, closures, simple
+local aliases, constructors and statically resolvable methods. It examines both
+branches and never calls application functions or evaluates properties.
+It is conservative: for callback tables, factories or runtime plugin selection,
+use explicit app tags. Imports, annotation evaluation and default factories are
+ordinary Python execution; schema generation is **not an untrusted-code sandbox**.
+
+The installed CLI supports the same flows:
+
+```bash
+tunablex schema --app training --import train --out config/train
+tunablex analyze --entry myapp.pipeline:train_main --out config/train
+python -m tunablex analyze --entry myapp.pipeline:train_main
+```
+
+Omit `--out` to print a JSON object containing `schema` and `defaults`.
+Use `--sys-path src` for a package that is not yet installed.
+
+## CLI values
+
+Both `argparse.ArgumentParser` and `jsonargparse.ArgumentParser` are supported.
+`add_flags_by_entry(parser, entrypoint)` selects flags through static discovery.
+
+| Parameter type | Example |
+| --- | --- |
+| `int`, `float`, `str`, `Path` | `--train.epochs 20` |
+| `bool` | `--train.verbose` / `--no-train.verbose` |
+| `Literal`, enum | `--optimizer adam`, `--level 2` |
+| `list[int]`, `Sequence[int]`, `tuple[int, ...]` | `--layers 128 256` |
+| Empty collection | `--layers` with no following values |
+| Fixed tuple | `--shape '[640,480]'` |
+| Mapping | `--weights '{"main": 0.8}'` |
+| Nullable value | `--seed null` |
+| Nested model | `--section.field value` |
+
+Required fields can come from the config file or CLI. Validation happens after
+merging. Unknown fields are errors, including nested misspellings. Strings are
+not automatically treated as Python expressions; JSON is used for structured values.
+
+## Documentation and examples
+
+- [API reference](docs/api.md): public functions, types and error behavior.
+- [Design, limitations and review findings](docs/design-and-limitations.md).
+- [Migration notes and changelog](CHANGELOG.md).
+- [Contributor and release guide](CONTRIBUTING.md).
+- [Examples](examples/): app tags, shared declarations, CLI integration and schemas.
+
+Run examples as modules from a source checkout:
+
+```bash
+python -m examples.jsonargparse_app.train_jsonarg_app --train.epochs 20
+python -m examples.jsonargparse_app.train_jsonarg_params --model.hidden_sizes 128 256
+python -m examples.trace_generate_schema --entry train --prefix config/train
+python -m examples.argparse_trace.train_trace --config config/train.json
+```
+
+Directories named `*_trace` retain their historical names; they now use static
+analysis. Current API names are `TunableParams`, `make_config_for_app`,
+`schema_for_app`, `make_config_for_entry` and `schema_for_entrypoint`.
+Earlier README names such as `TunableParameters` and `schema_by_trace` are not
+exported aliases.
+
+## Contributors and license
+
+Created by **Jacques Papper**, with core contributions by **Vincent Drouet**.
+See [CONTRIBUTORS.md](CONTRIBUTORS.md). Contributions are welcome.
+
+[MIT license](LICENSE).

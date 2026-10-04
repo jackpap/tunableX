@@ -1,10 +1,10 @@
-"""Example: Generate JSON Schema and default config by static AST analysis of an entrypoint.
+"""Example: Generate JSON Schema and default config by app tags.
 
 Usage:
-  python examples/trace_generate_schema.py --entry train --prefix train_config
+  python examples/app_generate_schema.py --app train --prefix train_config
   -> writes train_config.schema.json and train_config.json
 
-  python examples/trace_generate_schema.py --entry serve --prefix serve_config
+  python examples/app_generate_schema.py --app serve --prefix serve_config
   -> writes serve_config.schema.json and serve_config.json
 """
 
@@ -16,10 +16,9 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).parents[1]))
 
-import examples.myapp.pipeline_params as pipeline_params
+import examples.myapp.pipeline_params  # noqa: F401 - register the app parameters
 
-from tunablex.runtime import schema_for_app
-from tunablex.runtime import write_schema
+from tunablex.runtime import schema_for_app, write_schema
 
 
 def main():

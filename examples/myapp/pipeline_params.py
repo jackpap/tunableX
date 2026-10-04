@@ -1,4 +1,4 @@
-"""Pipeline using centralized TunableParameters classes.
+"""Pipeline using centralized TunableParams classes.
 
 Functions access values via class attributes (e.g., Model.hidden_units) and
 are registered by inferring namespace from default expressions like
@@ -11,12 +11,8 @@ from typing import Literal
 
 from tunablex import tunable
 
-from .params import MainParams
-from .params import ModelParams
-from .params import ServeParams
-from .params import TrainParams
-from .pipeline_submodule import SubmoduleClass
-from .pipeline_submodule import submodule_fun
+from .params import MainParams, ModelParams, ServeParams, TrainParams
+from .pipeline_submodule import SubmoduleClass, submodule_fun
 
 Preprocess = ModelParams.Preprocess
 
