@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — repository review
+## 0.2.0 — 2026-10-04
 
 ### Fixes and capabilities
 
@@ -8,7 +8,6 @@
   annotation serializers and field exclusions.
 - Resolve data-dependent factory inputs by canonical field name within each
   namespace, including renamed centralized arguments on direct calls.
-
 - Support Python 3.14 deferred annotations without evaluating unrelated fields.
 - Incorporate PR #10's cached per-field annotations for spawned/forkserver workers.
 - Honor positional, keyword and positional-only overrides; preserve nested Python values.

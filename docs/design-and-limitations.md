@@ -51,9 +51,8 @@ incorrect fixtures and unconditional assertions.
 
 The follow-up retains the contributor commits from PR #10 in its history. It also
 resolves concrete defaults without an active config, instead of rejecting every
-centralized-reference call as PR #10 originally proposed. The package version is
-left unchanged; a maintainer should choose the next release after reviewing the
-behavior changes in the changelog.
+centralized-reference call as PR #10 originally proposed. These improvements ship
+in version 0.2.0; see the changelog for behavior changes and migration guidance.
 
 ## Remaining boundaries and practical alternatives
 
