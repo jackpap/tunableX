@@ -8,8 +8,7 @@ from pydantic import Field
 
 from tunablex import tunable
 
-from .pipeline_submodule import SubmoduleClass
-from .pipeline_submodule import submodule_fun
+from .pipeline_submodule import SubmoduleClass, submodule_fun
 
 
 @tunable(

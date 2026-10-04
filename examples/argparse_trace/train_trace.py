@@ -1,14 +1,13 @@
+from argparse import ArgumentParser
+
 import examples.myapp.pipeline as pipeline  # registers @tunable
-from jsonargparse import ArgumentParser
 
 from tunablex import use_config
-from tunablex.runtime import load_config_for_entry
-from tunablex.runtime import schema_for_entrypoint
-from tunablex.runtime import write_schema
+from tunablex.runtime import load_config_for_entry, schema_for_entrypoint, write_schema
 
 if __name__ == "__main__":
     parser = ArgumentParser(prog="train_trace")
-    parser.add_argument("--config", required=True, help="Path to train_config.json")
+    parser.add_argument("--config", help="Path to train_config.json")
     parser.add_argument(
         "--gen-schema", action="store_true", help="Generate JSON Schema & defaults by AST analysis and exit"
     )
@@ -22,6 +21,8 @@ if __name__ == "__main__":
         write_schema(args.schema_prefix, schema, defaults)
         print(f"Wrote {args.schema_prefix}.schema.json and {args.schema_prefix}.json")
     else:
+        if not args.config:
+            parser.error("--config is required unless --gen-schema is used")
         cfg = load_config_for_entry(pipeline.train_main, args.config)  # no app tags needed
         with use_config(cfg):
             pipeline.train_main()

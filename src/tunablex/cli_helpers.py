@@ -1,164 +1,168 @@
-"""CLI helpers to expose tunables as jsonargparse flags and build configs.
-
-- Adds flags for nested namespaces using dotted paths (e.g., --model.preprocess.toto.dropna).
-- Builds overrides dict matching the nested JSON structure.
-"""
+"""Dotted configuration flags for argparse and jsonargparse."""
 
 from __future__ import annotations
 
-from argparse import SUPPRESS
-from argparse import BooleanOptionalAction
+from argparse import SUPPRESS, ArgumentTypeError, BooleanOptionalAction
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
-from typing import Literal
-from typing import get_args
-from typing import get_origin
+from typing import Literal, get_args, get_origin
 
-from pydantic import BaseModel
-from pydantic import Field
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from .io import load_structured_config
-from .runtime import make_config_for_app
-from .runtime import make_config_for_entry
-
-if TYPE_CHECKING:
-    from jsonargparse import ArgumentParser
-    from jsonargparse._core import ArgumentGroup
+from .runtime import make_config_for_app, make_config_for_entry
 
 
-def _help_with_default(fld) -> str | None:
-    desc = getattr(fld, "description", None)
-    if fld.is_required():
-        return f"{desc} (required)" if desc else "(required)"
-    default_val = fld.default
-    if isinstance(default_val, bool):
-        default_str = str(default_val).lower()
-    elif isinstance(default_val, Path):
-        default_str = str(default_val)
+def _help_with_default(field) -> str:
+    if field.is_required():
+        detail = "required"
+    elif field.default_factory is not None:
+        detail = "default: factory"
     else:
-        default_str = repr(default_val)
-    if desc:
-        return f"{desc} (default: {default_str})"
-    return f"(default: {default_str})"
+        value = field.default
+        display = (
+            str(value).lower() if isinstance(value, bool) else str(value) if isinstance(value, Path) else repr(value)
+        )
+        detail = f"default: {display}"
+    return f"{field.description} ({detail})" if field.description else f"({detail})"
 
 
-def _is_model_type(ann) -> bool:
-    return isinstance(ann, type) and issubclass(ann, BaseModel)
+def _is_model_type(annotation) -> bool:
+    return isinstance(annotation, type) and issubclass(annotation, BaseModel)
 
 
-def _add_field_flag(name: str, ann: type, field: Field, grp: ArgumentGroup | ArgumentParser):
-    help_text = _help_with_default(field)
-    flag = f"--{name}"
-    dest = f"TX__{name.replace('.', '__')}"
-    if get_origin(ann) is Literal:
-        grp.add_argument(flag, choices=[*get_args(ann)], dest=dest, help=help_text, default=SUPPRESS)
-    elif get_origin(ann) is Sequence or ann in (list, tuple):
-        grp.add_argument(flag, nargs="+", type=get_args(ann)[0], dest=dest, help=help_text, default=SUPPRESS)
-    elif ann is bool:
-        grp.add_argument(flag, action=BooleanOptionalAction, dest=dest, help=help_text, default=SUPPRESS)
-    elif ann in (int, float, str, Path):
-        grp.add_argument(flag, type=ann, dest=dest, help=help_text, default=SUPPRESS)
-    else:
-        grp.add_argument(flag, type=str, dest=dest, help=help_text, default=SUPPRESS)
+def _dest(path: tuple[str, ...]) -> str:
+    # Dots are valid argparse destinations and preserve names containing '__'.
+    return "TX__" + ".".join(path)
 
 
-def _add_section_flags(section_name: str, model_type: type[BaseModel], parser: ArgumentParser) -> None:
-    grp = parser.add_argument_group(section_name)
-    for name, field in model_type.model_fields.items():
-        ann = field.annotation
-        # Recurse into nested models
-        if _is_model_type(ann):
-            _add_section_flags(f"{section_name}.{name}", model_type=ann, parser=parser)
+def _leaves(model, path=(), ancestors=()):
+    for name, field in model.model_fields.items():
+        current = (*path, name)
+        annotation = field.annotation
+        if _is_model_type(annotation) and annotation not in ancestors:
+            yield from _leaves(annotation, current, (*ancestors, model))
         else:
-            _add_field_flag(name=f"{section_name}.{name}", ann=ann, field=field, grp=grp)
+            yield current, field
 
 
-def add_flags_from_model(parser: ArgumentParser, app_config_model: type[BaseModel]) -> None:
-    """Create flags like --section.field for each tunable in the AppConfig model.
+def _convert(annotation):
+    adapter = TypeAdapter(annotation)
 
-    Recurses into nested BaseModel fields to support compounded namespaces.
-    Parser defaults are SUPPRESS so we can detect presence via hasattr(args, dest).
-    Actual defaults still come from the Pydantic model instance when building the config.
+    def parse(text):
+        if text == "null" and type(None) in get_args(annotation):
+            return None
+        # Prefer raw strings for string fields, including string-valued Literals/Enums.
+        try:
+            return adapter.validate_python(text)
+        except ValidationError:
+            try:
+                return adapter.validate_json(text)
+            except ValidationError as exc:
+                raise ArgumentTypeError(str(exc)) from exc
+
+    return parse
+
+
+def _add_field_flag(path, field, group):
+    annotation = field.annotation
+    flag = "--" + ".".join(path)
+    kwargs = {"dest": _dest(path), "help": _help_with_default(field), "default": SUPPRESS}
+    origin, args = get_origin(annotation), get_args(annotation)
+    if annotation is bool:
+        kwargs["action"] = BooleanOptionalAction
+    elif (
+        origin in (list, set, frozenset, Sequence)
+        or annotation in (list, tuple, set, frozenset)
+        or (origin is tuple and len(args) == 2 and args[1] is Ellipsis)
+    ):
+        kwargs.update(nargs="*", type=_convert(args[0] if args else str))
+    else:
+        kwargs["type"] = _convert(annotation)
+        if origin is Literal:
+            kwargs["choices"] = list(args)
+    group.add_argument(flag, **kwargs)
+
+
+def add_flags_from_model(parser, app_config_model: type[BaseModel]) -> None:
+    """Add typed dotted flags. Required values may come from either file or CLI.
+
+    Lists/Sequences use space-separated values. Mappings, fixed tuples, optional
+    models and other structured values accept a JSON token. Validation is completed
+    after merging, so defaults never overwrite file values.
     """
-    for section_name, section_field in app_config_model.model_fields.items():
-        ann = section_field.annotation
-        if _is_model_type(ann):
-            _add_section_flags(section_name, model_type=ann, parser=parser)
-        else:  # Root level
-            _add_field_flag(name=section_name, ann=ann, field=section_field, grp=parser)
+    groups = {}
+    for path, field in _leaves(app_config_model):
+        if len(path) > 1:
+            key = ".".join(path[:-1])
+            if key not in groups:
+                groups[key] = parser.add_argument_group(key)
+            group = groups[key]
+        else:
+            group = parser
+        _add_field_flag(path, field, group)
 
 
-def add_flags_by_app(parser: ArgumentParser, app: str):
-    """Add flags for all tunables tagged with the given app and return the AppConfig model."""
-    app_config_model = make_config_for_app(app)
-    add_flags_from_model(parser, app_config_model)
-    return app_config_model
+def add_flags_by_app(parser, app: str) -> type[BaseModel]:
+    """Add fields selected by app tag and return their config model type."""
+    model = make_config_for_app(app)
+    add_flags_from_model(parser, model)
+    return model
 
 
-def add_flags_by_entry(parser: ArgumentParser, entrypoint) -> BaseModel:  # type: ignore[override]
-    """Add flags discovered via static (AST) analysis of the entrypoint call graph.
-
-    Returns the generated AppConfig model (same as add_flags_by_app).
-    """
-    app_config_model = make_config_for_entry(entrypoint)
-    add_flags_from_model(parser, app_config_model)
-    return app_config_model
+def add_flags_by_entry(parser, entrypoint) -> type[BaseModel]:
+    """Add fields selected through static entrypoint analysis and return their model."""
+    model = make_config_for_entry(entrypoint)
+    add_flags_from_model(parser, model)
+    return model
 
 
 def deep_update(base: dict, extra: dict) -> dict:
-    """Recursively merge extra into base (in place) and return base."""
-    for k, v in (extra or {}).items():
-        if isinstance(v, dict) and isinstance(base.get(k), dict):
-            deep_update(base[k], v)
+    """Recursively merge extra into base in place; lists and scalars replace."""
+    for key, value in extra.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            deep_update(base[key], value)
         else:
-            base[k] = v
+            base[key] = value
     return base
 
 
 def collect_overrides(args, app_config_model) -> dict:
-    """Collect provided CLI flags into a nested overrides dict matching AppConfig."""
-
-    def is_model_type(ann) -> bool:
-        return isinstance(ann, type) and issubclass(ann, BaseModel)
-
-    overrides: dict = {}
-
-    def assign_path(path: list[str], name: str, value) -> None:
-        cur = overrides
-        for p in path:
-            cur = cur.setdefault(p, {})
-        cur[name] = value
-
-    def walk_section(dest_prefix: str, node_path: list[str], model_type: type[BaseModel]) -> None:
-        for name, fld in model_type.model_fields.items():
-            ann = fld.annotation
-            if is_model_type(ann):
-                walk_section(f"{dest_prefix}__{name}", [*node_path, name], ann)
+    """Collect only supplied flags, preserving explicit null values."""
+    overrides = {}
+    # jsonargparse namespaces provide as_dict() and nest dotted destinations.
+    values = args.as_dict() if hasattr(args, "as_dict") else vars(args)
+    for path, _ in _leaves(app_config_model):
+        destination = _dest(path)
+        if destination in values:
+            value = values[destination]
+        else:
+            current = values
+            for part in destination.split("."):
+                if not isinstance(current, dict) or part not in current:
+                    break
+                current = current[part]
+            else:
+                value = current
+                cursor = overrides
+                for part in path[:-1]:
+                    cursor = cursor.setdefault(part, {})
+                cursor[path[-1]] = value
                 continue
-            dest = f"TX__{dest_prefix}__{name}"
-            if hasattr(args, dest):
-                val = getattr(args, dest)
-                if val is not None:
-                    assign_path(node_path, name, val)
-
-    for section_name, section_field in app_config_model.model_fields.items():
-        section_model = section_field.annotation
-        if is_model_type(section_model):
-            walk_section(section_name, [section_name.replace("__", "_")], section_model)
-        else:  # Root level
-            dest = f"TX__{section_name}"
-            if hasattr(args, dest) and (val := getattr(args, dest)) is not None:
-                overrides[section_name] = val
-
+            continue
+        cursor = overrides
+        for part in path[:-1]:
+            cursor = cursor.setdefault(part, {})
+        cursor[path[-1]] = value
     return overrides
 
 
 def build_cfg_from_file_and_args(app_config_model, args, config_attr: str = "config") -> dict:
-    """Merge defaults <- file (optional) <- CLI flags into a nested config dict."""
-    cfg = app_config_model().model_dump(mode="json")
+    """Merge file <- explicit flags, then apply and validate defaults once.
+
+    Returns JSON-compatible values. Invalid/unknown fields raise ValidationError.
+    """
     path = getattr(args, config_attr, None)
-    if path:
-        cfg = deep_update(cfg, load_structured_config(path))
-    overrides = collect_overrides(args, app_config_model)
-    return deep_update(cfg, overrides)
+    data = load_structured_config(path) if path else {}
+    deep_update(data, collect_overrides(args, app_config_model))
+    return app_config_model.model_validate(data).model_dump(mode="json")

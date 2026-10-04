@@ -6,9 +6,7 @@ import pytest
 from jsonargparse import ArgumentParser
 from pydantic import Field
 
-from tunablex import add_flags_by_app
-from tunablex import build_cfg_from_file_and_args
-from tunablex import tunable
+from tunablex import add_flags_by_app, build_cfg_from_file_and_args, tunable
 from tunablex.context import use_config
 from tunablex.runtime import make_config_for_app
 
@@ -53,16 +51,18 @@ def test_chained_tunable_decorators_cli_override(tmp_path):
     p.add_argument("--config")
     app_model = add_flags_by_app(p, "chainapp")
 
-    args = p.parse_args([
-        "--config",
-        str(cfg_json),
-        "--chain.alpha.x",
-        "10",
-        "--chain.beta.y",
-        "0.01",
-        "--chain.beta.z",
-        "sgd",
-    ])
+    args = p.parse_args(
+        [
+            "--config",
+            str(cfg_json),
+            "--chain.alpha.x",
+            "10",
+            "--chain.beta.y",
+            "0.01",
+            "--chain.beta.z",
+            "sgd",
+        ]
+    )
     merged = build_cfg_from_file_and_args(app_model, args)
     assert merged["chain"]["alpha"]["x"] == 10
     assert merged["chain"]["beta"]["y"] == 0.01

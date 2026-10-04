@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "tunablex"                # PyPI name (normalized)
 version = "0.1.7"                # bump before each release
-description = "Function-first tunables with auto JSON/YAML/TOML config & schema, per-executable composition (tags or trace), and runtime auto-injection."
+description = "Function-first tunables with auto JSON/YAML/TOML config & schema, per-executable composition (tags or static analysis), and runtime auto-injection."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -13,7 +13,7 @@ authors = [
   { name = "Jacques Papper" },
   { name = "Vincent Drouet", email = "v.drouet@iconcfd.com" }
 ]
-dependencies = ["pydantic>=2.12.5"]
+dependencies = ["pydantic>=2.12.5,<3", "tomli>=2; python_version < '3.11'"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "License :: OSI Approved :: MIT License",
@@ -22,6 +22,8 @@ classifiers = [
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Typing :: Typed",
 ]
 [project.urls]
@@ -33,17 +35,24 @@ Issues = "https://github.com/jackpap/tunableX/issues"
 packages = ["src/tunablex"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src", "README.md", "LICENSE", "pyproject.toml"]
+include = ["src", "tests", "examples", "docs", "README.md", "CONTRIBUTING.md", "CONTRIBUTORS.md", "CHANGELOG.md", "LICENSE", "pyproject.toml", ".ruff.toml"]
 
 [project.optional-dependencies]
 jsonargparse = ["jsonargparse>=4.26"]
 yaml = ["PyYAML>=6.0.1"]
 all = ["jsonargparse>=4.26", "PyYAML>=6.0.1"]
-# Developer tools (linting, tests, hooks) + runtime optionals
+# Developer tools and optional runtime integrations
 dev = [
   "jsonargparse>=4.26",
   "PyYAML>=6.0.1",
-  "ruff>=0.6.0",
+  "ruff>=0.16.3",
   "pytest>=8.0.0",
-  "pre-commit>=3.5.0",
+  "build>=1.2",
+  "twine>=5",
 ]
+
+[project.scripts]
+tunablex = "tunablex.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

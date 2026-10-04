@@ -27,6 +27,8 @@ def test_analyze_generate_default_yaml(tmp_path, run_example):
     assert "preprocess" in data["model"]
     assert "submodule_fun" in data["model"]["preprocess"]
     assert "submodule_class" in data["model"]["preprocess"]
+    assert "attr1" in data["model"]["preprocess"]["submodule_class"]
+    assert "arg1" in data["model"]["preprocess"]["submodule_class"]
 
 
 @pytest.mark.skipif(pytest.importorskip("yaml") is None, reason="PyYAML not installed")

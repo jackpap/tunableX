@@ -10,3 +10,4 @@ build/
 .venv/
 .env
 uv.lock
+.ruff_cache/

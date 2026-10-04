@@ -6,30 +6,32 @@ from the active AppConfig at call time. Supports dotted namespaces.
 
 from __future__ import annotations
 
+import ast
 import functools
 import inspect
 import re
 import sys
+import textwrap
+from copy import copy
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
-from typing import Any
-from typing import get_type_hints
+from itertools import pairwise
+from typing import TYPE_CHECKING, Annotated, Any, get_type_hints
 
+from pydantic import Field, TypeAdapter
 from pydantic.fields import FieldInfo
 
+from .annotations import raw_annotations, signature
 from .context import _active_cfg
-from .registry import REGISTRY
-from .registry import TunableArg
+from .registry import REGISTRY, TunableArg
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from pydantic import BaseModel
-
 
 def _pascalcase_to_snake_case(ns: str) -> str:
     """Convert a namespace name from PascalCase to snake_case."""
-    return re.sub(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", ns).lower()
+    words = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", ns)
+    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", words).lower()
 
 
 def _get_description(cls: type, name: str) -> str | None:
@@ -43,18 +45,24 @@ def _get_description(cls: type, name: str) -> str | None:
         Parameter's docstring, or None if it does not exist.
     """
     try:
-        source = inspect.getsource(cls)
-        i1 = source.index(name)
-        s1 = source[i1:]
-        i2 = s1.index('"""') + 3
-        s2 = s1[i2:]
-        i3 = s2.index('"""')
-        return s2[:i3]
-    except Exception:  # noqa: BLE001
-        return None
+        tree = ast.parse(textwrap.dedent(inspect.getsource(cls)))
+        body = next(node.body for node in tree.body if isinstance(node, ast.ClassDef))
+        for current, following in pairwise(body):
+            if (
+                isinstance(current, ast.AnnAssign)
+                and isinstance(current.target, ast.Name)
+                and current.target.id == name
+                and isinstance(following, ast.Expr)
+                and isinstance(following.value, ast.Constant)
+                and isinstance(following.value.value, str)
+            ):
+                return inspect.cleandoc(following.value.value)
+    except (OSError, TypeError, SyntaxError, StopIteration):
+        pass
+    return None
 
 
-@dataclass
+@dataclass(frozen=True)
 class TunableParamData:
     """Class containing the data of a tunable parameter."""
 
@@ -62,51 +70,171 @@ class TunableParamData:
     typ: type
     namespace: str
     name: str
+    raw_annotation: Any = None
 
 
 class TunableParamsMeta(type):
-    """A metaclass that allows to retrieve namespace and type annotation at runtime."""
+    """Metaclass that exposes centralized fields as parameter references."""
 
     def __init__(cls, name, bases, attrs):  # noqa: D107
         super().__init__(name, bases, attrs)
-        cls.namespace = None
+        type.__setattr__(cls, "namespace", TunableParamsMeta._compose_namespace(name))
+        type.__setattr__(cls, "__tunable_type_hints__", {})
+        type.__setattr__(cls, "__tunable_fields__", {})
+        type.__setattr__(cls, "__tunable_globals__", TunableParamsMeta._execution_globals(cls))
+
+        for field_name, raw_annotation in raw_annotations(cls).items():
+            field = attrs.get(field_name)
+            if not isinstance(field, FieldInfo):
+                continue
+            try:
+                typ = TunableParamsMeta._resolve_annotation(field_name, raw_annotation, cls)
+            except NameError:
+                # Keep unrelated unresolved annotations lazy. If the field is
+                # actually used as a tunable default, _resolve_type below
+                # raises the contextual error instead.
+                typ = None
+            if typ is not None:
+                type.__getattribute__(cls, "__tunable_type_hints__")[field_name] = typ
+            field = copy(field)
+            if field.description is None:
+                field.description = _get_description(cls, field_name)
+            type.__getattribute__(cls, "__tunable_fields__")[field_name] = TunableParamData(
+                field,
+                typ if typ is not None else Any,
+                type.__getattribute__(cls, "namespace"),
+                field_name,
+                raw_annotation,
+            )
 
     @staticmethod
-    def _process_name(name: str) -> str:
-        """Process a class name to turn it into a namespace."""
-        name = _pascalcase_to_snake_case(name).replace("_params", "")
+    def _declaring_class(cls, name: str):
+        """Return the MRO class that declares ``name``'s annotation."""
+        for candidate in type.__getattribute__(cls, "__mro__"):
+            fields = type.__getattribute__(candidate, "__dict__").get("__tunable_fields__", {})
+            if name in fields:
+                return candidate
+        return None
+
+    @staticmethod
+    def _execution_globals(cls) -> dict[str, Any]:
+        """Return globals used while executing the declaring class."""
+        module_name = type.__getattribute__(cls, "__module__")
+        frame = inspect.currentframe()
+        try:
+            while frame is not None:
+                if frame.f_globals.get("__name__") == module_name:
+                    return frame.f_globals
+                frame = frame.f_back
+        finally:
+            del frame
+
+        module = sys.modules.get(module_name)
+        if module is not None:
+            return vars(module)
+        return {}
+
+    @staticmethod
+    def _resolve_annotation(name: str, raw_annotation: Any, declaring_cls: type) -> type:
+        """Resolve one annotation using the declaring module's namespace."""
+        if not isinstance(raw_annotation, str):
+            return raw_annotation
+
+        module_name = type.__getattribute__(declaring_cls, "__module__")
+        module_globals = type.__getattribute__(declaring_cls, "__tunable_globals__")
+        if not module_globals:
+            module = sys.modules.get(module_name)
+            module_globals = {} if module is None else vars(module)
+        localns = dict(type.__getattribute__(declaring_cls, "__dict__"))
+        localns[type.__getattribute__(declaring_cls, "__name__")] = declaring_cls
+        proxy = type(
+            "_TunableAnnotationProxy",
+            (),
+            {"__module__": module_name, "__annotations__": {name: raw_annotation}},
+        )
+        return get_type_hints(
+            proxy,
+            globalns=module_globals,
+            localns=localns,
+            include_extras=True,
+        )[name]
+
+    @staticmethod
+    def _resolve_type(name: str, declaring_cls: type) -> type:
+        """Resolve a deferred annotation when its field is actually used."""
+        cache = type.__getattribute__(declaring_cls, "__tunable_type_hints__")
+        if name in cache:
+            return cache[name]
+
+        field_data = type.__getattribute__(declaring_cls, "__tunable_fields__")[name]
+        try:
+            resolved = TunableParamsMeta._resolve_annotation(name, field_data.raw_annotation, declaring_cls)
+        except NameError as exc:
+            missing = exc.name or str(exc)
+            msg = (
+                f"Unable to resolve annotation for tunable field "
+                f"'{type.__getattribute__(declaring_cls, '__module__')}."
+                f"{type.__getattribute__(declaring_cls, '__qualname__')}.{name}' "
+                f"(raw annotation: {field_data.raw_annotation!r}); missing name: {missing}. "
+                "The name must be available at runtime, not only under TYPE_CHECKING."
+            )
+            raise NameError(msg) from exc
+
+        cache[name] = resolved
+        return resolved
+
+    @staticmethod
+    def _compose_namespace(name: str) -> str:
+        """Turn a class name into a namespace."""
+        name = _pascalcase_to_snake_case(name).removesuffix("_params")
         if name == "main" or name == "root":
             name = ""
         return name
 
     def __getattribute__(cls, name: str) -> Any | tuple[Any, str, str, str]:
-        """Override that returns additional informations when the attribute is a FieldInfo.
-
-        Store the classes that are accessed and use them to build the final namespace.
-        """
+        """Return centralized fields as metadata references."""
         value = super().__getattribute__(name)
         if not isinstance(cls, TunableParamsMeta):
             return value
 
-        if super().__getattribute__("namespace") is None:
-            cls.namespace = TunableParamsMeta._process_name(super().__getattribute__("__name__"))
+        if isinstance(value, TunableParamsMeta):
+            return _ParameterNamespace(value, _join_namespace(cls.namespace, name))
 
-        # If value is a class with this metaclass, update its parent namespace
-        if isinstance(value, type) and isinstance(value, TunableParamsMeta):
-            value.namespace = (
-                f"{cls.namespace}.{TunableParamsMeta._process_name(name)}"
-                if cls.namespace
-                else TunableParamsMeta._process_name(name)  # for cases like main.advanced
-            )
+        if not isinstance(value, FieldInfo):
             return value
 
-        if isinstance(value, FieldInfo):
-            globalsns = vars(sys.modules[cls.__module__])
-            typ = get_type_hints(cls, globalns=globalsns).get(name, Any)
-            if value.description is None:
-                value.description = _get_description(cls, name)
-            return TunableParamData(value, typ, cls.namespace, name)
+        declaring_cls = TunableParamsMeta._declaring_class(cls, name)
+        if declaring_cls is not None:
+            fields = type.__getattribute__(declaring_cls, "__tunable_fields__")
+            if name in fields:
+                field_data = fields[name]
+                typ = TunableParamsMeta._resolve_type(name, declaring_cls)
+                if field_data.value.description is None:
+                    field_data.value.description = _get_description(declaring_cls, name)
+                return TunableParamData(field_data.value, typ, type.__getattribute__(cls, "namespace"), name)
 
+        return value
+
+
+def _join_namespace(parent: str, name: str) -> str:
+    child = TunableParamsMeta._compose_namespace(name)
+    return ".".join(filter(None, [parent, child]))
+
+
+@dataclass(frozen=True)
+class _ParameterNamespace:
+    """Immutable namespace view: reusing a parameter class cannot mutate prior references."""
+
+    cls: type
+    namespace: str
+
+    def __getattr__(self, name):
+        raw = type.__getattribute__(self.cls, name)
+        if isinstance(raw, TunableParamsMeta):
+            return _ParameterNamespace(raw, _join_namespace(self.namespace, name))
+        value = getattr(self.cls, name)
+        if isinstance(value, TunableParamData):
+            return TunableParamData(value.value, value.typ, self.namespace, value.name)
         return value
 
 
@@ -114,7 +242,7 @@ class TunableParams(metaclass=TunableParamsMeta):
     """A class containing tunable parameters.
 
     Inherit from this class to declare tunable parameters globally.
-    If the class name contains `Params`, it will be removed from the namespace for brevity.
+    A trailing `Params` is removed from the class namespace for brevity.
     If the resulting namespace is `main` or `root`, the parameters will be stored at the root level.
 
     When using several levels of namespaces, it is possible to declare the parameters in a class at the root level
@@ -136,14 +264,10 @@ class TunableParams(metaclass=TunableParamsMeta):
     """
 
 
-def _resolve_nested_section(cfg_model: BaseModel, dotted_ns: str):
-    if not dotted_ns:  # main namespace
-        return cfg_model
+def _resolve_nested_section(cfg_model, dotted_ns: str):
     obj = cfg_model
-    for seg in dotted_ns.split("."):
-        if obj is None or not hasattr(obj, seg):
-            return None
-        obj = getattr(obj, seg)
+    for segment in dotted_ns.split(".") if dotted_ns else ():
+        obj = obj.get(segment) if isinstance(obj, dict) else getattr(obj, segment, None)
     return obj
 
 
@@ -153,88 +277,117 @@ def tunable(
     exclude: str | Iterable[str] = (),
     apps: str | Iterable[str] = (),
 ):
-    """Mark a function's selected parameters as user-tunable.
+    """Register selected function parameters and inject missing arguments from use_config.
 
-    - include: names to include. If empty, include all params that have defaults
-      (unless mode='exclude' with an explicit exclude list).
-    - namespace: JSON section name; defaults to an empty namespace.
-    - apps: optional tags to group functions per executable/app.
+    With no include list, select parameters with defaults, minus exclude. Explicit
+    positional and keyword arguments take precedence. Without an active config,
+    selected Field/reference defaults are resolved to values; required ones raise.
     """
-    include_set = set(include or ())
+    include_set = set(include)
     exclude_set = {exclude} if isinstance(exclude, str) else set(exclude)
     if include_set and exclude_set:
-        msg = "Cannot pass both `include` and `exclude` arguments."
-        raise ValueError(msg)
-    apps = {apps} if isinstance(apps, str) else set(apps)
+        raise ValueError("Cannot pass both `include` and `exclude` arguments.")
+    app_set = {apps} if isinstance(apps, str) else set(apps)
 
     def decorator(fn):
-        sig = inspect.signature(fn)
-        namespaces = {}
-        global_names = {}
-        for name, p in sig.parameters.items():
-            global_name = name
-            if name == "mro":
-                msg = "`mro` is a protected name, please use an other name for your tunable parameters."
-                raise ValueError(msg)
-            if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
+        if isinstance(fn, (staticmethod, classmethod)):
+            return type(fn)(decorator(fn.__func__))
+        sig = signature(fn)
+        original = inspect.unwrap(fn)
+        unknown = (include_set | exclude_set) - sig.parameters.keys()
+        if unknown:
+            raise ValueError(f"Unknown tunable parameter(s) on {fn.__qualname__}: {', '.join(sorted(unknown))}")
+        parameters = {}
+        for name, parameter in sig.parameters.items():
+            if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
+                if name in include_set:
+                    raise ValueError(f"Variadic parameter {name!r} cannot be tunable")
                 continue
-            if include_set:
-                selected = name in include_set
-            elif exclude_set:
-                selected = (p.default is not inspect._empty) and (name not in exclude_set)
-            else:
-                selected = p.default is not inspect._empty
+            selected = (
+                name in include_set
+                if include_set
+                else (parameter.default is not inspect.Parameter.empty and name not in exclude_set)
+            )
             if not selected:
                 continue
-            default = p.default if p.default is not inspect._empty else ...
+            default = parameter.default if parameter.default is not inspect.Parameter.empty else ...
+            global_name, ns = name, namespace
             if isinstance(default, TunableParamData):
-                # The parameter is declared in a TunableParam class; retrieve type, namespace and reference name
-                default, typ, ns, global_name = (
-                    default.value,
-                    default.typ,
-                    default.namespace,
-                    default.name,
-                )
+                default, typ, ns, global_name = default.value, default.typ, default.namespace, default.name
             else:
-                typ = inspect.get_annotations(fn, eval_str=False)[name]
-                typ = eval(typ, fn.__globals__) if isinstance(typ, str) else typ
-                ns = namespace
-            namespaces.setdefault(ns, []).append(name)
-            if global_name != name:
-                # Store the global name for later look-up (allows different local names for the same parameter)
-                global_names[name] = global_name
-                name = global_name
+                annotation = raw_annotations(original).get(name, Any)
+                # Resolve just the selected annotation, preserving Annotated metadata.
+                proxy = type("_Annotation", (), {"__annotations__": {name: annotation}})
+                typ = get_type_hints(proxy, globalns=original.__globals__, include_extras=True)[name]
             REGISTRY.register(
                 TunableArg(
-                    name=name,
+                    name=global_name,
                     typ=typ,
                     default=default,
                     namespace=ns,
-                    fn_names={fn.__qualname__, f"{fn.__module__}.{fn.__qualname__}"},
-                    apps=set(apps),
+                    fn_names={f"{fn.__module__}.{fn.__qualname__}"},
+                    apps=set(app_set),
                 )
             )
+            parameters[name] = (ns, global_name, default, typ)
 
-        @functools.wraps(fn)
-        def wrapper(*args, **kwargs):
-            # Handle static methods called from instances
-            if isinstance(fn, staticmethod) and args[0].__class__.__name__ == fn.__qualname__.split(".")[0]:
-                args = args[1:]
+        def prepare(args, kwargs):
+            bound = sig.bind_partial(*args, **kwargs)
             cfg = _active_cfg.get()
-            if cfg is not None:
-                filtered = {}
-                for ns, ns_vars in namespaces.items():
-                    section = _resolve_nested_section(cfg, ns)
-                    data = section if isinstance(section, dict) else section.model_dump()
-                    filtered.update({
-                        # Get the tunable arguments from the config and retrieve the original name
-                        k: data[global_names.get(k, k)]
-                        for k in ns_vars
-                        if global_names.get(k, k) in data and k not in kwargs
-                    })
-                return fn(*args, **filtered, **kwargs)
+            validated_by_namespace = {}
+            for name, (ns, key, default, typ) in parameters.items():
+                if name in bound.arguments:
+                    if isinstance(bound.arguments[name], (TunableParamData, FieldInfo)):
+                        raise TypeError(f"{fn.__qualname__}.{name} requires a value, not parameter metadata")
+                    validated_by_namespace.setdefault(ns, {})[key] = bound.arguments[name]
+                    continue
+                section = _resolve_nested_section(cfg, ns)
+                if isinstance(section, dict) and key in section:
+                    bound.arguments[name] = section[key]
+                elif section is not None and not isinstance(section, dict) and hasattr(section, key):
+                    # getattr preserves nested models, custom objects, Paths and Enums.
+                    bound.arguments[name] = getattr(section, key)
+                elif isinstance(default, FieldInfo):
+                    if default.is_required():
+                        raise TypeError(f"Missing required tunable {ns + '.' if ns else ''}{key} for {fn.__qualname__}")
+                    # The factory is evaluated explicitly with canonical dependency names.
+                    # Its default metadata is not valid in a standalone TypeAdapter schema.
+                    info = default.asdict()
+                    attributes = {
+                        k: v for k, v in info["attributes"].items() if k not in {"default", "default_factory"}
+                    }
+                    validation_field = Field(**attributes)
+                    validation_field.metadata = list(info["metadata"])
+                    bound.arguments[name] = TypeAdapter(Annotated[typ, validation_field]).validate_python(
+                        default.get_default(
+                            call_default_factory=True, validated_data=validated_by_namespace.get(ns, {})
+                        )
+                    )
+                elif default is not ...:
+                    # Leave ordinary Python defaults alone unless binding positional-only gaps.
+                    bound.arguments[name] = default
+                if name in bound.arguments:
+                    validated_by_namespace.setdefault(ns, {})[key] = bound.arguments[name]
+            return bound
 
-            return fn(*args, **kwargs)
+        if inspect.iscoroutinefunction(fn):
+
+            @functools.wraps(fn)
+            async def wrapper(*args, **kwargs):
+                bound = prepare(args, kwargs)
+                return await fn(*bound.args, **bound.kwargs)
+        elif inspect.isgeneratorfunction(fn):
+
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                bound = prepare(args, kwargs)
+                yield from fn(*bound.args, **bound.kwargs)
+        else:
+
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                bound = prepare(args, kwargs)
+                return fn(*bound.args, **bound.kwargs)
 
         return wrapper
 
