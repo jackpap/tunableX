@@ -4,11 +4,17 @@
 
 # tunableX
 
-**Typed configuration, declared where your Python functions use it.**
+**Declare tunables where they're used. Configure whole Python workflows with less wiring.**
 
 `tunableX` turns selected function arguments into Pydantic configuration models,
 JSON Schema, JSON/YAML defaults and command-line flags. Compose a configuration
 using app tags or static analysis of an entrypoint, then inject it with `use_config`.
+
+For scientific pipelines, simulations and reusable Python components, a setting
+often belongs several calls below the application's entrypoint. tunableX lets that
+component declare its settings while the application chooses their values. The
+functions in between keep passing their ordinary inputs, without carrying a config
+object solely for a deeper function's benefit.
 
 - Keep parameters beside the logic, or share them through `TunableParams` classes.
 - Validate types, constraints and unknown settings with Pydantic v2.
@@ -30,10 +36,170 @@ pip install 'tunablex[all]'          # both optional integrations
 The base package does not require PyYAML or jsonargparse. On Python 3.10,
 `tomli` is installed automatically for TOML support.
 
-## A complete example
+## Prove it: one solver, two applications
+
+Consider two entrypoints sharing the same call chain:
+`single()` or `study()` → `run_case()` → `solve()`.
+The small scalar relaxation loop below returns the number of iterations it took
+to approach a target. It stands in for a computational component; the example is
+fully runnable and needs no numerical libraries.
+
+Save this as `workflow.py` and run `python workflow.py`:
+
+<!-- example: workflow -->
+```python
+from pydantic import Field
+from tunablex import make_config_for_app, tunable, use_config
+
+@tunable(namespace="solver", apps=("single", "study"))
+def solve(target: float,
+          tolerance: float = Field(1e-6, gt=0),
+          relaxation: float = Field(0.5, gt=0, le=1)):
+    value = 0.0
+    for iteration in range(1, 101):
+        value += relaxation * (target - value)
+        if abs(target - value) <= tolerance:
+            return iteration
+    raise RuntimeError("Did not converge within 100 iterations")
+
+def run_case(target):
+    return solve(target)
+
+def single():
+    return run_case(9.0)
+
+def study():
+    return [run_case(target) for target in (9.0, 100.0)]
+
+if __name__ == "__main__":
+    SingleConfig = make_config_for_app("single")
+    StudyConfig = make_config_for_app("study")
+
+    with use_config(SingleConfig()):
+        print(single())
+
+    cfg = StudyConfig.model_validate({"solver": {"relaxation": 1.0}})
+    with use_config(cfg):
+        print(study())
+        assert solve(9.0, relaxation=0.5) == 24  # Explicit arguments still win.
+```
+
+Output:
+
+```text
+24
+[1, 1]
+```
+
+The study's setting reaches the solver through `study()` and `run_case()` without
+either function accepting or forwarding configuration. The single-case application
+uses the default. Both applications reuse the same parameter declarations.
+
+### What changes when you add a tunable?
+
+Suppose the solver originally used a fixed relaxation factor of `0.5`. The change
+to make it configurable is entirely within the solver declaration and computation:
+
+```diff
+ @tunable(namespace="solver", apps=("single", "study"))
+-def solve(target: float, tolerance: float = Field(1e-6, gt=0)):
++def solve(target: float, tolerance: float = Field(1e-6, gt=0),
++          relaxation: float = Field(0.5, gt=0, le=1)):
+     ...
+-        value += 0.5 * (target - value)
++        value += relaxation * (target - value)
+```
+
+After importing the updated module, both applications' generated models include
+`solver.relaxation`, its default and its `0 < value <= 1` constraint. Schema/defaults
+export and the existing CLI integration pick it up from that declaration:
+
+```bash
+tunablex schema --app single --import workflow --sys-path . --out config/single
+tunablex schema --app study --import workflow --sys-path . --out config/study
+```
+
+Run these commands beside `workflow.py`; `--sys-path .` makes that local module
+importable by the installed command. The exported JSON defaults contain
+`"relaxation": 0.5` under `"solver"`. A parser
+created with `add_flags_by_app(parser, "study")` exposes `--solver.relaxation`;
+see the [complete CLI example](#a-complete-cli-example) below for the startup code.
+No separate model field or parser option is maintained for this new parameter,
+and neither entrypoint nor `run_case()` changes.
+
+### A fair comparison with Pydantic
+
+Pydantic can implement the same behavior cleanly by passing a config object.
+Here is the equivalent runnable example; it produces the same output:
+
+<details>
+<summary>Show the explicit Pydantic implementation</summary>
+
+<!-- example: pydantic-workflow -->
+```python
+from pydantic import BaseModel, ConfigDict, Field
+
+class SolverConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+    tolerance: float = Field(1e-6, gt=0)
+    relaxation: float = Field(0.5, gt=0, le=1)
+
+class AppConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+    solver: SolverConfig = Field(default_factory=SolverConfig)
+
+def solve(target, cfg: SolverConfig):
+    value = 0.0
+    for iteration in range(1, 101):
+        value += cfg.relaxation * (target - value)
+        if abs(target - value) <= cfg.tolerance:
+            return iteration
+    raise RuntimeError("Did not converge within 100 iterations")
+
+def run_case(target, cfg: SolverConfig):
+    return solve(target, cfg)
+
+def single(cfg: AppConfig):
+    return run_case(9.0, cfg.solver)
+
+def study(cfg: AppConfig):
+    return [run_case(target, cfg.solver) for target in (9.0, 100.0)]
+
+if __name__ == "__main__":
+    print(single(AppConfig()))
+    cfg = AppConfig.model_validate({"solver": {"relaxation": 1.0}})
+    print(study(cfg))
+```
+
+</details>
+
+| Adding `relaxation` | Explicit Pydantic config | tunableX |
+| --- | --- | --- |
+| Declare its type, default and constraint | Add a field to `SolverConfig` | Add a selected argument to `solve` |
+| Use it in the algorithm | Read `cfg.relaxation` | Read `relaxation` |
+| Change existing intermediate callers | No: they already forward the config object | No: they already call ordinary functions |
+| Carry configuration through the call chain | Explicit config arguments | The active `use_config` context |
+| Generate a schema and validate input | Pydantic | Pydantic through the composed model |
+
+**The saving is configuration wiring and separate parameter declarations.** Passing
+a Pydantic config object also avoids editing every caller when a field is added.
+Pydantic Settings already provides [CLI and settings sources](https://docs.pydantic.dev/latest/concepts/pydantic_settings/),
+and Pydantic's [`validate_call`](https://docs.pydantic.dev/latest/concepts/validation_decorator/)
+validates function arguments. tunableX adds composition of selected declarations
+and injection into the functions that use them.
+
+This is most useful when many reusable components serve several applications.
+With a few settings, or an established design that passes config objects explicitly,
+Pydantic alone may be simpler. Context-based injection makes dependencies less
+visible at call sites; import decorated modules before composition, and use app
+tags when dynamic dispatch makes static discovery unreliable. See the
+[remaining limitations](docs/design-and-limitations.md#remaining-boundaries-and-practical-alternatives).
+
+## A complete CLI example
 
 Save as `train.py`:
 
+<!-- example: train -->
 ```python
 from argparse import ArgumentParser
 from pydantic import Field
@@ -79,6 +245,7 @@ snake_case namespace with the `Params` suffix removed; `MainParams` and
 `RootParams` represent the root. **Nesting/aliases**, rather than inheritance,
 create nested namespaces. Inheritance reuses fields within the subclass namespace.
 
+<!-- example: shared -->
 ```python
 from pydantic import Field
 from tunablex import TunableParams, make_config_for_app, tunable, use_config
@@ -141,7 +308,7 @@ ordinary Python execution; schema generation is **not an untrusted-code sandbox*
 The installed CLI supports the same flows:
 
 ```bash
-tunablex schema --app training --import train --out config/train
+tunablex schema --app training --import train --sys-path . --out config/train
 tunablex analyze --entry myapp.pipeline:train_main --out config/train
 python -m tunablex analyze --entry myapp.pipeline:train_main
 ```
